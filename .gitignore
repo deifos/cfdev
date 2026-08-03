@@ -1,0 +1,13 @@
+/dist/
+/bin/
+/src/
+.cfdev/
+.cloudflared/
+cert.pem
+*.pem
+*.test
+*.prof
+.DS_Store
+Thumbs.db
+.env
+.env.*

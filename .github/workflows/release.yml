@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go test ./...
+      - run: go vet ./...
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Check installer and package scripts
+        run: |
+          bash -n scripts/install.sh
+          bash -n scripts/render-packages.sh
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: cfdev-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: cfdev-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            output: cfdev-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: cfdev-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            output: cfdev-windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            output: cfdev-windows-arm64.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          version="${VERSION#v}"
+          go build -trimpath -ldflags="-s -w -X github.com/deifos/cfdev/internal/app.Version=${version}" -o "dist/${{ matrix.output }}" ./cmd/cfdev
+      - name: Attest binary
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ matrix.output }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: dist/${{ matrix.output }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums and package definitions
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum cfdev-* > checksums.txt
+          cd ..
+          bash scripts/render-packages.sh "${VERSION#v}" dist/checksums.txt dist/packages
+          cd dist/packages
+          zip -r ../winget-manifests.zip winget
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/cfdev-* \
+            dist/checksums.txt \
+            dist/packages/cfdev.rb \
+            dist/packages/cfdev.json \
+            dist/winget-manifests.zip \
+            scripts/install.ps1 \
+            scripts/install.sh \
+            --verify-tag \
+            --generate-notes \
+            --title "cfdev ${GITHUB_REF_NAME}"

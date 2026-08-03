@@ -1,0 +1,30 @@
+{
+  "version": "@VERSION@",
+  "description": "Permanent URLs for local projects on your Cloudflare domain",
+  "homepage": "https://github.com/deifos/cfdev",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/deifos/cfdev/releases/download/v@VERSION@/cfdev-windows-amd64.exe#/cfdev.exe",
+      "hash": "@WINDOWS_AMD64_SHA@"
+    },
+    "arm64": {
+      "url": "https://github.com/deifos/cfdev/releases/download/v@VERSION@/cfdev-windows-arm64.exe#/cfdev.exe",
+      "hash": "@WINDOWS_ARM64_SHA@"
+    }
+  },
+  "bin": "cfdev.exe",
+  "checkver": {
+    "github": "https://github.com/deifos/cfdev"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/deifos/cfdev/releases/download/v$version/cfdev-windows-amd64.exe#/cfdev.exe"
+      },
+      "arm64": {
+        "url": "https://github.com/deifos/cfdev/releases/download/v$version/cfdev-windows-arm64.exe#/cfdev.exe"
+      }
+    }
+  }
+}

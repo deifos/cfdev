@@ -1,0 +1,16 @@
+# Created by cfdev release automation
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+PackageIdentifier: Deifos.cfdev
+PackageVersion: @VERSION@
+InstallerType: portable
+Commands:
+  - cfdev
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/deifos/cfdev/releases/download/v@VERSION@/cfdev-windows-amd64.exe
+    InstallerSha256: @WINDOWS_AMD64_SHA@
+  - Architecture: arm64
+    InstallerUrl: https://github.com/deifos/cfdev/releases/download/v@VERSION@/cfdev-windows-arm64.exe
+    InstallerSha256: @WINDOWS_ARM64_SHA@
+ManifestType: installer
+ManifestVersion: 1.10.0

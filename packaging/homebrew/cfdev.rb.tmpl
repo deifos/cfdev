@@ -1,0 +1,36 @@
+class Cfdev < Formula
+  desc "Permanent URLs for local projects on your Cloudflare domain"
+  homepage "https://github.com/deifos/cfdev"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/deifos/cfdev/releases/download/v#{version}/cfdev-darwin-arm64"
+      sha256 "@DARWIN_ARM64_SHA@"
+    end
+    on_intel do
+      url "https://github.com/deifos/cfdev/releases/download/v#{version}/cfdev-darwin-amd64"
+      sha256 "@DARWIN_AMD64_SHA@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/deifos/cfdev/releases/download/v#{version}/cfdev-linux-arm64"
+      sha256 "@LINUX_ARM64_SHA@"
+    end
+    on_intel do
+      url "https://github.com/deifos/cfdev/releases/download/v#{version}/cfdev-linux-amd64"
+      sha256 "@LINUX_AMD64_SHA@"
+    end
+  end
+
+  def install
+    bin.install Dir["cfdev-*"].first => "cfdev"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/cfdev --version")
+  end
+end

@@ -1,0 +1,4 @@
+interface:
+  display_name: "cfdev"
+  short_description: "Manage permanent URLs for local projects"
+  default_prompt: "Use $cfdev to expose my local app at a permanent Cloudflare URL."
