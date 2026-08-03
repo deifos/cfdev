@@ -26,7 +26,7 @@ The public URL stays the same every time. Put it in webhook providers, OAuth cal
 
 ## Install
 
-cfdev is currently pre-release, so the commands below become available when the first GitHub Release is published. Each installer selects the correct architecture, verifies the downloaded binary against the release SHA-256 manifest, installs without administrator access, and adds `cfdev` to the user `PATH`.
+Each release installer selects the correct architecture, verifies the downloaded binary against the release SHA-256 manifest, installs without administrator access, and adds `cfdev` to the user `PATH`.
 
 Windows:
 
@@ -53,7 +53,7 @@ go build -trimpath -o cfdev ./cmd/cfdev
 Run the one-time setup:
 
 ```bash
-cfdev init
+cfdev setup
 ```
 
 cfdev will:
@@ -76,7 +76,7 @@ The folder name becomes the subdomain. For example, running this inside `qtable-
 
 Run cfdev on the computer that hosts the local app. A Mac can open an app exposed from Windows without installing cfdev; install cfdev on the Mac only when the app itself runs locally there.
 
-Each computer runs `cfdev init` once and creates its own machine tunnel. Authenticate normally in the browser on each machine—never copy `cert.pem` or tunnel credential files between computers.
+Each computer runs `cfdev setup` once and creates its own machine tunnel. Authenticate normally in the browser on each machine—never copy origin certificates or tunnel credential files between computers. `cfdev init` remains a compatibility alias for existing scripts.
 
 A permanent hostname can be handed from one machine to another without changing its URL. For example, to move `screenslick.<your-domain>` from Windows to a Mac where the app uses port 3005, run on the Mac:
 
@@ -98,7 +98,9 @@ The old computer can keep serving its other mappings, but it no longer receives 
 ## Commands
 
 ```text
-cfdev init [domain]             Sign in and create this machine's tunnel
+cfdev setup [domain]            Sign in and create this machine's tunnel
+cfdev domain [domain]           Show or safely switch the active domain
+cfdev reset                     Stop and forget this machine
 cfdev <port>                    Add the current project and start the tunnel
 cfdev add <name> <port>         Add a permanent URL
 cfdev claim <name> <port>       Move a project URL to this machine
@@ -123,7 +125,7 @@ Common flags:
 --json                          Stable JSON for scripts and agents
 --quiet, -q                     Only print errors
 --verbose, -v                   Stream detailed cloudflared output
---force, -f                     Replace conflicting local or DNS state
+--force, -f                     Proceed through accepted conflicts or cleanup failures
 --all                           Remove every configured mapping
 --yes, -y                       Accept safe setup confirmations
 --detach, -d                    Run cloudflared in the background
@@ -177,19 +179,19 @@ cfdev list --json
 cfdev claim qtable 3000 --json
 ```
 
-If an agent runs `cfdev init --json` before browser authentication exists, cfdev exits immediately with code `2`:
+If an agent runs `cfdev setup --json` before browser authentication exists, cfdev exits immediately with code `2`:
 
 ```json
 {
   "ok": false,
   "data": {
-    "interactive_command": "cfdev init"
+    "interactive_command": "cfdev setup"
   },
   "summary": "Cloudflare browser authentication is required",
   "error": {
     "code": "AUTH_REQUIRED",
     "message": "Cloudflare browser authentication is required",
-    "hint": "Run `cfdev init` once to authenticate in your browser."
+    "hint": "Run `cfdev setup` once to authenticate in your browser."
   }
 }
 ```
@@ -220,9 +222,19 @@ Exit codes:
 | `4` | Missing or unsupported dependency |
 | `5` | Mapping, DNS, or process conflict |
 
-Commands are idempotent. Agents can safely retry `init`, an identical `add`, removal of an already absent cfdev mapping, `up` for a running tunnel, and `down` for a stopped tunnel.
+Commands are idempotent. Agents can safely retry `setup`, `domain` for the active domain, `reset` for an already reset machine, an identical `add`, removal of an already absent cfdev mapping, `up` for a running tunnel, and `down` for a stopped tunnel.
+
+If `cfdev setup --json` cannot discover the selected zone, it returns `DOMAIN_REQUIRED` with an explicit retry command. Supplying a domain lets first-time setup continue through a transient Cloudflare discovery outage; the success result then reports `domain_validated:false` so automation does not mistake the fallback for a completed zone validation. Domain switching never uses this fallback.
 
 Bulk deletion deliberately requires confirmation. For unattended cleanup, inspect `cfdev list --json`, then use `cfdev clear --yes --json` or `cfdev remove --all --yes --json`.
+
+## Switching domains and resetting a machine
+
+`cfdev domain` prints the active domain. `cfdev domain example.com` validates the selected Cloudflare zone and reuses this machine's tunnel when the domain belongs to the same account. If browser authorization is needed, cfdev preserves the current certificate by moving it to `~/.cloudflared/cfdev-cert-<domain>.pem`; switching back activates that saved certificate without copying its token.
+
+A domain switch refuses to proceed while project mappings exist. Run `cfdev clear` first so working hostnames are never silently abandoned. Switching to a domain in another Cloudflare account is also refused: run `cfdev reset`, authenticate the other account, then run `cfdev setup <domain>`.
+
+`cfdev reset` requires confirmation. It stops only the process managed by cfdev, removes exact DNS records that still target this machine's tunnel, deletes that exact tunnel, removes its tunnel credential, and forgets local machine state. If cleanup fails partway through, cfdev attempts to restore DNS it already removed and restart the prior background tunnel before returning the error. It preserves the browser-login origin certificate and the optional managed `cloudflared` binary. If remote cleanup is impossible, `--force` forgets local state but reports what could not be removed from Cloudflare.
 
 ## Configuration and security
 
@@ -243,10 +255,11 @@ Cloudflare authentication remains in its normal location:
 ```text
 ~/.cloudflared/
 ├── cert.pem
+├── cfdev-cert-<domain>.pem   saved authorization used for domain switching
 └── <tunnel-id>.json
 ```
 
-cfdev never prints or copies the account token contained in `cert.pem`. Local state stores only non-secret identifiers and the credential file's path. Files are written with user-only permissions on operating systems that support them.
+cfdev never prints or copies the account token contained in an origin certificate. Domain switching uses same-directory atomic moves, and reset preserves origin certificates. Local state stores only non-secret identifiers and the credential file's path. Files are written with user-only permissions on operating systems that support them.
 
 DNS removal is deliberately narrow: cfdev deletes a record only when both the hostname and its `<tunnel-id>.cfargotunnel.com` target match. Accepting a full hostname does not broaden that ownership check. Automatic `claim` is similarly narrow: it replaces another tunnel CNAME but never an unrelated DNS record.
 
@@ -258,16 +271,16 @@ go vet ./...
 go build -trimpath -o dist/cfdev ./cmd/cfdev
 ```
 
-To publish a release after the repository is public and CI is green:
+To publish a release after CI is green:
 
 ```bash
-git tag v0.1.2
-git push origin v0.1.2
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The release workflow tests all supported targets, builds Linux and Windows on Ubuntu, builds and Developer ID signs each macOS architecture on its matching native GitHub runner, waits for Apple notarization, creates checksums and build attestations, renders package-manager definitions with exact hashes, and publishes one GitHub Release. A manual run performs the same build, signing, notarization, and attestation checks without publishing a release. `cfdev upgrade` uses the release metadata and refuses to install a binary that does not match its checksum. Package-managed installations direct users back to their package manager instead.
 
-The implementation uses only the Go standard library. The approved product and technical decisions are recorded in [DRAFT.md](DRAFT.md).
+The implementation uses only the Go standard library. See [CHANGELOG.md](CHANGELOG.md) for release history and [DRAFT.md](DRAFT.md) for the approved product and technical decisions.
 
 ## Agent skill
 
@@ -275,7 +288,7 @@ The reusable Codex skill lives in [`skills/cfdev`](skills/cfdev). Agents can rea
 
 ## Security
 
-cfdev manages Cloudflare browser credentials and DNS for your zone. See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and operator guidance. Never copy or commit `cert.pem` or tunnel credential files.
+cfdev manages Cloudflare browser credentials and DNS for your zone. See [SECURITY.md](SECURITY.md) for reporting vulnerabilities and operator guidance. Never copy or commit origin certificates or tunnel credential files.
 
 ## License
 

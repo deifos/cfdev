@@ -2,11 +2,14 @@ package app
 
 import "fmt"
 
-var Version = "0.1.1-dev"
+var Version = "0.2.0-dev"
 
 func helpText(command string) string {
 	commandHelp := map[string]string{
-		"init":    "cfdev init [domain]\n\n  Open Cloudflare in your browser and create one permanent tunnel for this machine.",
+		"setup":   "cfdev setup [domain]\n\n  Open Cloudflare in your browser and create one permanent tunnel for this machine.",
+		"init":    "cfdev init [domain]\n\n  Compatibility alias for `cfdev setup`.",
+		"domain":  "cfdev domain [domain]\n\n  Show the active domain, or authenticate, validate, and switch to another domain. Clear project URLs before switching.",
+		"reset":   "cfdev reset [--yes] [--force]\n\n  Stop and forget this machine. Removes cfdev-owned DNS, deletes this machine's tunnel and credential, and preserves the Cloudflare origin certificate and managed binary.",
 		"add":     "cfdev add <name> <port> [--force]\n\n  Create a permanent hostname and map it to a local HTTP port. Use the short project name, such as `screenslick`.",
 		"claim":   "cfdev claim <name> <port>\n\n  Move an existing cfdev project URL from another machine to this one. Use the short project name, such as `screenslick`.",
 		"remove":  "cfdev remove <name> [--force]\ncfdev remove --all [--yes]\n\n  Remove one permanent project URL by its short name:\n\n    cfdev remove screenslick\n\n  A full configured hostname, such as `screenslick.example.com`, is also accepted. Bulk removal always requires confirmation.",
@@ -26,7 +29,9 @@ func helpText(command string) string {
 	return fmt.Sprintf(`cfdev %s — permanent local URLs, minus the tunnel ceremony
 
 Usage
-  cfdev init [domain]             Sign in and create this machine's tunnel
+  cfdev setup [domain]            Sign in and create this machine's tunnel
+  cfdev domain [domain]           Show or safely switch the active domain
+  cfdev reset                     Stop and forget this machine
   cfdev add <name> <port>         Add a permanent URL
   cfdev claim <name> <port>       Move a project URL to this machine
   cfdev remove <name>             Remove a URL by short name
@@ -45,7 +50,7 @@ Options
   --json                          Stable JSON for scripts and agents
   --quiet, -q                     Only print errors
   --verbose, -v                   Stream detailed cloudflared output
-  --force, -f                     Replace conflicting local or DNS state
+  --force, -f                     Proceed through accepted conflicts or cleanup failures
   --all                           Remove every configured mapping
   --yes, -y                       Accept safe setup confirmations
   --detach, -d                    Run cloudflared in the background
@@ -53,7 +58,8 @@ Options
   --version, -V                   Show the version
 
 Examples
-  cfdev init
+  cfdev setup
+  cfdev domain example.com
   cfdev add qtable 3000
   cfdev remove qtable
   cfdev up -d

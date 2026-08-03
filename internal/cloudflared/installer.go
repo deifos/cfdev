@@ -61,7 +61,7 @@ func Install(ctx context.Context, paths config.Paths) (*Client, string, error) {
 	}
 	if len(digest) != 64 {
 		failureErr := failure.New("CLOUDFLARED_UNVERIFIED", "the cloudflared release did not include a SHA-256 digest", failure.ExitDependency)
-		failureErr.Hint = "Install cloudflared through your system package manager, then retry `cfdev init`."
+		failureErr.Hint = "Install cloudflared through your system package manager, then retry `cfdev setup`."
 		return nil, "", failureErr
 	}
 	if assetSize <= 0 || assetSize > 200<<20 {

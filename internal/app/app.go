@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -110,8 +112,12 @@ func (app *App) execute(ctx context.Context, inv cli.Invocation, view *ui.UI) (r
 		return result{}, nil
 	case "dashboard", "tui":
 		return app.dashboard(view)
-	case "init":
+	case "setup", "init":
 		return app.init(ctx, inv, view)
+	case "domain":
+		return app.domain(ctx, inv, view)
+	case "reset":
+		return app.reset(ctx, inv, view)
 	case "add":
 		return app.add(ctx, inv, view)
 	case "claim":
@@ -156,7 +162,7 @@ func (app *App) execute(ctx context.Context, inv cli.Invocation, view *ui.UI) (r
 
 func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (result, error) {
 	if len(inv.Args) > 1 {
-		return result{}, usage("`cfdev init` accepts at most one domain", "Try `cfdev init example.com`.")
+		return result{}, usage("`cfdev setup` accepts at most one domain", "Try `cfdev setup example.com`.")
 	}
 	paths, err := config.ResolvePaths()
 	if err != nil {
@@ -165,6 +171,17 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 	existing, err := config.LoadOptional(paths)
 	if err != nil {
 		return result{}, err
+	}
+	if existing != nil && len(inv.Args) == 1 {
+		requested, normalizeErr := config.NormalizeDomain(inv.Args[0])
+		if normalizeErr != nil {
+			return result{}, normalizeErr
+		}
+		if requested != existing.Domain {
+			switchRequired := failure.New("DOMAIN_SWITCH_REQUIRED", "setup cannot replace the active domain on an existing machine", failure.ExitConflict)
+			switchRequired.Hint = "Use `cfdev domain " + requested + "` so existing mappings and authorization are checked safely."
+			return result{}, switchRequired
+		}
 	}
 	if existing != nil && !inv.Options.Force {
 		return result{Data: publicConfig(paths, existing), Summary: "Already ready on " + existing.Domain + "."}, nil
@@ -177,7 +194,7 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 			return result{}, err
 		}
 		if inv.Options.JSON && !inv.Options.Yes {
-			typed.Data = map[string]any{"retry_command": "cfdev init --yes --json"}
+			typed.Data = map[string]any{"retry_command": "cfdev setup --yes --json"}
 			typed.Hint = "Retry with `--yes` to install a verified managed copy."
 			return result{}, typed
 		}
@@ -217,8 +234,8 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 	if _, statErr := os.Stat(certPath); statErr != nil {
 		if inv.Options.JSON {
 			authErr := failure.New("AUTH_REQUIRED", "Cloudflare browser authentication is required", failure.ExitConfig)
-			authErr.Hint = "Run `cfdev init` once to authenticate in your browser."
-			authErr.Data = map[string]any{"interactive_command": "cfdev init"}
+			authErr.Hint = "Run `cfdev setup` once to authenticate in your browser."
+			authErr.Data = map[string]any{"interactive_command": "cfdev setup"}
 			return result{}, authErr
 		}
 		view.Info("Opening Cloudflare in your browser…")
@@ -235,27 +252,47 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 		view.Success("Cloudflare authenticated")
 	}
 
+	discoveryContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+	authorizedDomain, discoveryErr := cloudflare.NewAPI(cert).ZoneName(discoveryContext)
+	cancel()
 	domain := ""
+	domainValidated := discoveryErr == nil
+	setupCertChange := originCertSwitch{}
 	if len(inv.Args) == 1 {
 		domain, err = config.NormalizeDomain(inv.Args[0])
+		if err == nil && discoveryErr == nil && domain != authorizedDomain {
+			authProgress := view.Progress("Authenticating " + domain + "…")
+			authorization, authErr := app.authorizeDomain(ctx, client, authorizedDomain, domain, inv, view, authProgress, false, "cfdev setup "+domain)
+			authProgress.Stop()
+			if authErr != nil {
+				err = authErr
+			} else {
+				certPath, cert = authorization.certPath, authorization.cert
+				setupCertChange = authorization.change
+				domainValidated = true
+			}
+		} else if err == nil && discoveryErr != nil && !inv.Options.JSON {
+			view.Warning("Cloudflare could not validate the domain right now; continuing with the explicit domain.")
+		}
 	} else {
-		discoveryContext, cancel := context.WithTimeout(ctx, 15*time.Second)
-		domain, err = cloudflare.NewAPI(cert).ZoneName(discoveryContext)
-		cancel()
-		if err != nil && !inv.Options.JSON {
+		domain, err = authorizedDomain, discoveryErr
+		if err != nil && inv.Options.JSON {
+			domainErr := failure.New("DOMAIN_REQUIRED", "the selected Cloudflare domain could not be discovered", failure.ExitConfig)
+			domainErr.Hint = "Retry with an explicit domain, such as `cfdev setup example.com --yes --json`."
+			domainErr.Data = map[string]any{"retry_command": "cfdev setup example.com --yes --json"}
+			return result{}, domainErr
+		}
+		if err != nil {
 			domain, err = app.prompt("Domain to use")
+			if err == nil {
+				view.Warning("Cloudflare could not validate the domain right now; continuing with the explicit domain.")
+			}
 		}
 		if err == nil {
 			domain, err = config.NormalizeDomain(domain)
 		}
 	}
 	if err != nil {
-		if inv.Options.JSON {
-			domainErr := failure.New("DOMAIN_REQUIRED", "the selected Cloudflare domain could not be discovered", failure.ExitConfig)
-			domainErr.Hint = "Retry with an explicit domain, such as `cfdev init example.com --yes --json`."
-			domainErr.Data = map[string]any{"retry_command": "cfdev init example.com --yes --json"}
-			return result{}, domainErr
-		}
 		return result{}, err
 	}
 	if !inv.Options.JSON {
@@ -268,7 +305,7 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 	} else {
 		machineID, tunnelName, err = config.MachineIdentity(paths)
 		if err != nil {
-			return result{}, err
+			return result{}, rollbackAuthorization(setupCertChange, err)
 		}
 	}
 	tunnelProgress := view.Progress("Preparing this machine's permanent tunnel…")
@@ -277,7 +314,7 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 	tunnels, err := client.ListTunnels(managementContext, certPath, tunnelName)
 	cancel()
 	if err != nil {
-		return result{}, err
+		return result{}, rollbackAuthorization(setupCertChange, err)
 	}
 	var tunnel cloudflared.Tunnel
 	created := false
@@ -288,7 +325,7 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 		tunnel, err = client.CreateTunnel(managementContext, certPath, tunnelName)
 		cancel()
 		if err != nil {
-			return result{}, err
+			return result{}, rollbackAuthorization(setupCertChange, err)
 		}
 		created = true
 	}
@@ -297,9 +334,12 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 		credentialsPath = existing.CredentialsFile
 	}
 	if !fileExists(credentialsPath) {
+		if created {
+			_ = cleanupCreatedTunnel(client, certPath, tunnel.ID, credentialsPath)
+		}
 		missing := failure.New("TUNNEL_CREDENTIALS_MISSING", fmt.Sprintf("the tunnel %q exists, but its credential file is not on this machine", tunnelName), failure.ExitConfig)
 		missing.Hint = "Restore the credential file or remove the unusable tunnel in Cloudflare before retrying."
-		return result{}, missing
+		return result{}, rollbackAuthorization(setupCertChange, missing)
 	}
 
 	cfg := &config.Config{
@@ -311,7 +351,10 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 		cfg.Preferences = existing.Preferences
 	}
 	if err := config.Save(paths, cfg); err != nil {
-		return result{}, err
+		if created {
+			_ = cleanupCreatedTunnel(client, certPath, tunnel.ID, credentialsPath)
+		}
+		return result{}, rollbackAuthorization(setupCertChange, err)
 	}
 	tunnelProgress.Stop()
 	if !inv.Options.JSON {
@@ -323,8 +366,538 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 	}
 	data := publicConfig(paths, cfg)
 	data["authenticated"] = true
+	data["domain_validated"] = domainValidated
 	data["tunnel_created"] = created
 	return result{Data: data, Summary: "Ready. Permanent project URLs will use *." + domain + "."}, nil
+}
+
+// Certificate switches deliberately use checked renames instead of config's
+// overwrite-style replacement: an existing authorization backup must win.
+type originCertSwitch struct {
+	activePath   string
+	previousPath string
+	targetPath   string
+	changed      bool
+}
+
+type domainAuthorization struct {
+	certPath    string
+	cert        cloudflare.OriginCert
+	change      originCertSwitch
+	sameAccount bool
+}
+
+func (change originCertSwitch) rollback() error {
+	if !change.changed {
+		return nil
+	}
+	if _, err := os.Stat(change.activePath); err == nil {
+		if _, targetErr := os.Stat(change.targetPath); targetErr == nil {
+			return fmt.Errorf("cannot preserve the new Cloudflare authorization because %s already exists", change.targetPath)
+		} else if !os.IsNotExist(targetErr) {
+			return targetErr
+		}
+		if err := os.Rename(change.activePath, change.targetPath); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(change.previousPath, change.activePath)
+}
+
+func rollbackAuthorization(change originCertSwitch, cause error) error {
+	if rollbackErr := change.rollback(); rollbackErr != nil {
+		wrapped := failure.As(cause)
+		if wrapped.Hint != "" {
+			wrapped.Hint += " "
+		}
+		wrapped.Hint += "Cloudflare authorization rollback also failed: " + rollbackErr.Error()
+		return wrapped
+	}
+	return cause
+}
+
+func cleanupCreatedTunnel(client *cloudflared.Client, certPath, tunnelID, credentialsPath string) error {
+	cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cleanupCancel()
+	if err := client.DeleteTunnel(cleanupContext, certPath, tunnelID); err != nil {
+		return err
+	}
+	if filepath.Base(credentialsPath) == tunnelID+".json" {
+		if err := os.Remove(credentialsPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (app *App) domain(ctx context.Context, inv cli.Invocation, view *ui.UI) (result, error) {
+	if len(inv.Args) > 1 {
+		return result{}, usage("`cfdev domain` accepts at most one domain", "Try `cfdev domain example.com`.")
+	}
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return result{}, err
+	}
+	cfg, err := config.Load(paths)
+	if err != nil {
+		return result{}, err
+	}
+	if len(inv.Args) == 0 {
+		return result{Data: map[string]any{"domain": cfg.Domain}, Summary: cfg.Domain}, nil
+	}
+	target, err := config.NormalizeDomain(inv.Args[0])
+	if err != nil {
+		return result{}, err
+	}
+	if target != cfg.Domain && len(cfg.Mappings) > 0 {
+		blocked := failure.New("DOMAIN_HAS_MAPPINGS", fmt.Sprintf("cannot switch domains while %d project hostname(s) are configured", len(cfg.Mappings)), failure.ExitConflict)
+		blocked.Hint = "Run `cfdev clear` first so no working hostname is silently abandoned, then retry the domain switch."
+		blocked.Data = map[string]any{"domain": cfg.Domain, "target_domain": target, "mapping_count": len(cfg.Mappings)}
+		return result{}, blocked
+	}
+	client, err := cloudflared.Find(paths)
+	if err != nil {
+		return result{}, err
+	}
+
+	progress := view.Progress("Validating Cloudflare access to " + target + "…")
+	defer progress.Stop()
+	authorization, err := app.authorizeDomain(ctx, client, cfg.Domain, target, inv, view, progress, true, "cfdev domain "+target)
+	if err != nil {
+		return result{}, err
+	}
+	certPath, certChange, sameAccount := authorization.certPath, authorization.change, authorization.sameAccount
+	rollbackAuth := func(cause error) error { return rollbackAuthorization(certChange, cause) }
+
+	managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	tunnels, err := client.ListTunnels(managementContext, certPath, cfg.TunnelName)
+	cancel()
+	if err != nil {
+		return result{}, rollbackAuth(err)
+	}
+	var tunnel cloudflared.Tunnel
+	for _, candidate := range tunnels {
+		if candidate.ID == cfg.TunnelID {
+			tunnel = candidate
+			break
+		}
+	}
+	if target == cfg.Domain {
+		if tunnel.ID == "" {
+			missing := failure.New("TUNNEL_NOT_FOUND", "Cloudflare authentication is valid, but this machine's tunnel was not found", failure.ExitConfig)
+			missing.Hint = "Run `cfdev doctor` to inspect the local credential and Cloudflare tunnel state."
+			return result{}, rollbackAuth(missing)
+		}
+		progress.Stop()
+		return result{Data: map[string]any{
+			"domain": cfg.Domain, "changed": false, "authorization_changed": certChange.changed,
+			"tunnel_id": cfg.TunnelID, "validated": true,
+		}, Summary: "Using " + cfg.Domain + "; authorization and tunnel are valid."}, nil
+	}
+	created := false
+	if tunnel.ID == "" {
+		if !sameAccount || len(tunnels) > 0 {
+			mismatch := failure.New("DOMAIN_ACCOUNT_MISMATCH", "the requested domain does not expose this machine's existing tunnel", failure.ExitConflict)
+			mismatch.Hint = "Switch back to the original Cloudflare account, run `cfdev reset`, then run `cfdev setup " + target + "`."
+			return result{}, rollbackAuth(mismatch)
+		}
+		progress.Update("Preparing this machine's tunnel for " + target + "…")
+		managementContext, cancel = context.WithTimeout(ctx, 30*time.Second)
+		tunnel, err = client.CreateTunnel(managementContext, certPath, cfg.TunnelName)
+		cancel()
+		if err != nil {
+			return result{}, rollbackAuth(err)
+		}
+		created = true
+	}
+	credentialsPath := cloudflared.CredentialsPath(certPath, tunnel.ID)
+	if tunnel.ID == cfg.TunnelID && fileExists(cfg.CredentialsFile) {
+		credentialsPath = cfg.CredentialsFile
+	}
+	if !fileExists(credentialsPath) {
+		if created {
+			_ = cleanupCreatedTunnel(client, certPath, tunnel.ID, credentialsPath)
+		}
+		missing := failure.New("TUNNEL_CREDENTIALS_MISSING", "the target tunnel credential file is missing", failure.ExitConfig)
+		missing.Hint = "Restore the credential file or remove the unusable tunnel in Cloudflare before retrying."
+		return result{}, rollbackAuth(missing)
+	}
+
+	manager := processmanager.Manager{Paths: paths, Client: client}
+	previousStatus := manager.Status()
+	progress.Update("Stopping the current tunnel…")
+	stopped, err := manager.Stop()
+	if err != nil {
+		if created {
+			_ = cleanupCreatedTunnel(client, certPath, tunnel.ID, credentialsPath)
+		}
+		return result{}, rollbackAuth(err)
+	}
+
+	previous := *cfg
+	cfg.Domain = target
+	cfg.TunnelID = tunnel.ID
+	cfg.CredentialsFile = credentialsPath
+	progress.Update("Saving the new domain…")
+	if err := config.Save(paths, cfg); err != nil {
+		if created {
+			_ = cleanupCreatedTunnel(client, certPath, tunnel.ID, credentialsPath)
+		}
+		rollbackErr := certChange.rollback()
+		if previousStatus.Running && previousStatus.Mode == "background" {
+			_, _, _ = manager.StartBackground(&previous)
+		}
+		if rollbackErr != nil {
+			return result{}, fmt.Errorf("%w; Cloudflare authorization rollback also failed: %v", err, rollbackErr)
+		}
+		return result{}, err
+	}
+
+	restarted := false
+	if previousStatus.Running && previousStatus.Mode == "background" {
+		progress.Update("Restarting the tunnel…")
+		_, _, err = manager.StartBackground(cfg)
+		if err != nil {
+			restartErr := failure.Wrap("DOMAIN_SWITCHED_TUNNEL_STOPPED", "the domain switch succeeded, but the tunnel could not restart", failure.ExitGeneral, err)
+			restartErr.Hint = "The new domain is saved. Run `cfdev up -d` to retry starting the tunnel."
+			restartErr.Data = map[string]any{
+				"domain_changed": true, "previous_domain": previous.Domain, "domain": target,
+				"tunnel_id": tunnel.ID, "tunnel_running": false, "retry_command": "cfdev up -d",
+			}
+			return result{}, restartErr
+		}
+		restarted = true
+	}
+	progress.Stop()
+	if stopped && previousStatus.Mode == "foreground" && !inv.Options.JSON {
+		view.Warning("The foreground tunnel was stopped. Run `cfdev up` to start it on the new domain.")
+	}
+	return result{Data: map[string]any{
+		"previous_domain": previous.Domain, "domain": target, "changed": true,
+		"tunnel_id": tunnel.ID, "tunnel_created": created, "tunnel_restarted": restarted,
+	}, Summary: "Switched this machine from " + previous.Domain + " to " + target + "."}, nil
+}
+
+func (app *App) authorizeDomain(ctx context.Context, client *cloudflared.Client, currentDomain, target string, inv cli.Invocation, view *ui.UI, progress *ui.Progress, requireSameAccount bool, interactiveCommand string) (domainAuthorization, error) {
+	activePath := cloudflare.FindOriginCert()
+	activeCert, err := cloudflare.ReadOriginCert(activePath)
+	if err != nil {
+		return domainAuthorization{}, err
+	}
+	managementContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+	activeDomain, err := cloudflare.NewAPI(activeCert).ZoneName(managementContext)
+	cancel()
+	if err != nil {
+		return domainAuthorization{}, err
+	}
+	if activeDomain == target {
+		sameAccount := activeDomain == currentDomain
+		activeAbs, activeAbsErr := filepath.Abs(activePath)
+		defaultAbs, defaultAbsErr := filepath.Abs(cloudflare.DefaultOriginCertPath())
+		if requireSameAccount && !sameAccount && activeAbsErr == nil && defaultAbsErr == nil && activeAbs == defaultAbs {
+			previousCert, previousErr := cloudflare.ReadOriginCert(archivedOriginCertPath(activePath, currentDomain))
+			if previousErr == nil {
+				sameAccount = previousCert.AccountID == activeCert.AccountID
+			}
+		}
+		return domainAuthorization{certPath: activePath, cert: activeCert, sameAccount: sameAccount}, nil
+	}
+	if inv.Options.JSON {
+		authRequired := failure.New("AUTH_REQUIRED", "Cloudflare browser authentication is required for "+target, failure.ExitConfig)
+		authRequired.Hint = "Run `" + interactiveCommand + "` interactively and select that domain in Cloudflare."
+		authRequired.Data = map[string]any{"interactive_command": interactiveCommand, "authenticated_domain": activeDomain}
+		return domainAuthorization{}, authRequired
+	}
+	if strings.TrimSpace(os.Getenv("CFDEV_ORIGIN_CERT")) != "" || strings.TrimSpace(os.Getenv("TUNNEL_ORIGIN_CERT")) != "" {
+		mismatch := failure.New("DOMAIN_AUTH_MISMATCH", "the configured origin certificate authorizes "+activeDomain+", not "+target, failure.ExitConfig)
+		mismatch.Hint = "Point CFDEV_ORIGIN_CERT at a certificate for " + target + " and retry. cfdev will not move an operator-supplied certificate."
+		return domainAuthorization{}, mismatch
+	}
+	defaultPath := cloudflare.DefaultOriginCertPath()
+	activeAbs, _ := filepath.Abs(activePath)
+	defaultAbs, _ := filepath.Abs(defaultPath)
+	if activeAbs != defaultAbs {
+		mismatch := failure.New("DOMAIN_AUTH_MISMATCH", "Cloudflare authentication for "+target+" cannot replace a system-managed certificate", failure.ExitConfig)
+		mismatch.Hint = "Authenticate with a user-owned ~/.cloudflared/cert.pem, then retry."
+		return domainAuthorization{}, mismatch
+	}
+	previousPath := archivedOriginCertPath(defaultPath, activeDomain)
+	targetPath := archivedOriginCertPath(defaultPath, target)
+	if _, statErr := os.Stat(previousPath); statErr == nil {
+		conflict := failure.New("AUTH_BACKUP_EXISTS", "a saved Cloudflare authorization already exists for "+activeDomain, failure.ExitConflict)
+		conflict.Hint = "Inspect " + previousPath + " before retrying; cfdev will not overwrite an authorization certificate."
+		return domainAuthorization{}, conflict
+	} else if !os.IsNotExist(statErr) {
+		return domainAuthorization{}, failure.Wrap("AUTH_SWITCH_FAILED", "could not inspect the saved Cloudflare authorization", failure.ExitConfig, statErr)
+	}
+	if err := os.Rename(defaultPath, previousPath); err != nil {
+		return domainAuthorization{}, failure.Wrap("AUTH_SWITCH_FAILED", "could not preserve the current Cloudflare authorization", failure.ExitConfig, err)
+	}
+	change := originCertSwitch{activePath: defaultPath, previousPath: previousPath, targetPath: targetPath, changed: true}
+	if _, statErr := os.Stat(targetPath); statErr == nil {
+		if err := os.Rename(targetPath, defaultPath); err != nil {
+			_ = change.rollback()
+			return domainAuthorization{}, failure.Wrap("AUTH_SWITCH_FAILED", "could not activate the saved Cloudflare authorization", failure.ExitConfig, err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		_ = change.rollback()
+		return domainAuthorization{}, statErr
+	} else {
+		progress.Stop()
+		view.Info("Opening Cloudflare in your browser. Select " + target + "…")
+		if err := client.Login(ctx, app.In, app.Out, app.Err); err != nil {
+			_ = change.rollback()
+			return domainAuthorization{}, err
+		}
+	}
+	newCert, err := cloudflare.ReadOriginCert(defaultPath)
+	if err != nil {
+		_ = change.rollback()
+		return domainAuthorization{}, err
+	}
+	managementContext, cancel = context.WithTimeout(ctx, 15*time.Second)
+	selectedDomain, err := cloudflare.NewAPI(newCert).ZoneName(managementContext)
+	cancel()
+	if err != nil {
+		_ = change.rollback()
+		return domainAuthorization{}, err
+	}
+	if selectedDomain != target {
+		if selectedPath := archivedOriginCertPath(defaultPath, selectedDomain); selectedPath != targetPath {
+			if _, statErr := os.Stat(selectedPath); statErr == nil {
+				selectedPath = filepath.Join(filepath.Dir(defaultPath), fmt.Sprintf("cfdev-cert-%s-%d.pem", selectedDomain, time.Now().UnixNano()))
+				change.targetPath = selectedPath
+			} else if os.IsNotExist(statErr) {
+				change.targetPath = selectedPath
+			}
+		}
+		_ = change.rollback()
+		mismatch := failure.New("DOMAIN_AUTH_MISMATCH", "Cloudflare authorized "+selectedDomain+", not "+target, failure.ExitConfig)
+		mismatch.Hint = "Retry and select " + target + " in the Cloudflare browser window."
+		return domainAuthorization{}, mismatch
+	}
+	if requireSameAccount && newCert.AccountID != activeCert.AccountID {
+		_ = change.rollback()
+		mismatch := failure.New("DOMAIN_ACCOUNT_MISMATCH", target+" belongs to a different Cloudflare account", failure.ExitConflict)
+		mismatch.Hint = "Run `cfdev reset` on the current account before setting up a domain from another account."
+		return domainAuthorization{}, mismatch
+	}
+	return domainAuthorization{certPath: defaultPath, cert: newCert, change: change, sameAccount: true}, nil
+}
+
+func archivedOriginCertPath(defaultPath, domain string) string {
+	label := domain
+	if len(label) > 180 {
+		digest := sha256.Sum256([]byte(label))
+		label = label[:160] + "-" + fmt.Sprintf("%x", digest[:6])
+	}
+	return filepath.Join(filepath.Dir(defaultPath), "cfdev-cert-"+label+".pem")
+}
+
+func (app *App) reset(ctx context.Context, inv cli.Invocation, view *ui.UI) (result, error) {
+	if len(inv.Args) != 0 {
+		return result{}, usage("`cfdev reset` accepts no arguments", "Try `cfdev reset`.")
+	}
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return result{}, err
+	}
+	cfg, err := config.LoadOptional(paths)
+	if err != nil {
+		return result{}, err
+	}
+	if cfg == nil {
+		client := &cloudflared.Client{Binary: "cloudflared"}
+		if discovered, findErr := cloudflared.Find(paths); findErr == nil {
+			client = discovered
+		}
+		_, _ = (processmanager.Manager{Paths: paths, Client: client}).Stop()
+		if err := removeMachineState(paths); err != nil {
+			return result{}, err
+		}
+		return result{Data: map[string]any{"reset": false, "already_reset": true}, Summary: "This machine is already reset."}, nil
+	}
+	if !inv.Options.Yes {
+		if inv.Options.JSON {
+			required := failure.New("CONFIRMATION_REQUIRED", "resetting this machine requires confirmation", failure.ExitConfig)
+			required.Hint = "Retry with `cfdev reset --yes --json`."
+			required.Data = map[string]any{"retry_command": "cfdev reset --yes --json", "domain": cfg.Domain, "mapping_count": len(cfg.Mappings)}
+			return result{}, required
+		}
+		approved, promptErr := app.confirm(fmt.Sprintf("Stop and forget this machine, its tunnel, and %d project hostname(s)?", len(cfg.Mappings)), false)
+		if promptErr != nil {
+			return result{}, promptErr
+		}
+		if !approved {
+			return result{Data: map[string]any{"reset": false}, Summary: "Cancelled; this machine was not reset."}, nil
+		}
+	}
+
+	warnings := make([]string, 0)
+	client, clientErr := cloudflared.Find(paths)
+	if clientErr != nil && !inv.Options.Force {
+		return result{}, clientErr
+	}
+	if client == nil {
+		client = &cloudflared.Client{Binary: "cloudflared"}
+		warnings = append(warnings, "cloudflared was unavailable, so remote tunnel cleanup was skipped.")
+	}
+	certPath := cloudflare.FindOriginCert()
+	cert, certErr := cloudflare.ReadOriginCert(certPath)
+	if certErr == nil {
+		validationContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+		authorizedDomain, validationErr := cloudflare.NewAPI(cert).ZoneName(validationContext)
+		cancel()
+		if validationErr != nil {
+			certErr = validationErr
+		} else if authorizedDomain != cfg.Domain {
+			mismatch := failure.New("DOMAIN_AUTH_MISMATCH", "Cloudflare currently authorizes "+authorizedDomain+", not "+cfg.Domain, failure.ExitConfig)
+			mismatch.Hint = "Run `cfdev domain " + cfg.Domain + "` to restore and validate this machine's domain authorization, then retry reset."
+			certErr = mismatch
+		}
+	}
+	if certErr != nil && !inv.Options.Force {
+		return result{}, certErr
+	}
+	if certErr != nil {
+		warnings = append(warnings, "Cloudflare authentication was unavailable, so remote DNS and tunnel cleanup was skipped.")
+	}
+
+	manager := processmanager.Manager{Paths: paths, Client: client}
+	previousStatus := manager.Status()
+	progress := view.Progress("Stopping this machine's tunnel…")
+	defer progress.Stop()
+	stopped, err := manager.Stop()
+	if err != nil && !inv.Options.Force {
+		return result{}, err
+	}
+	if err != nil {
+		warnings = append(warnings, "The managed tunnel process could not be stopped: "+err.Error())
+	}
+
+	dnsRemoved := 0
+	dnsRemovedHostnames := make([]string, 0, len(cfg.Mappings))
+	rollbackRemoteCleanup := func(cause error) error {
+		restored := make([]string, 0, len(dnsRemovedHostnames))
+		restoreFailed := make([]string, 0)
+		for index := len(dnsRemovedHostnames) - 1; index >= 0; index-- {
+			hostname := dnsRemovedHostnames[index]
+			progress.Update("Restoring " + hostname + "…")
+			restoreContext, restoreCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			restoreErr := client.RouteDNS(restoreContext, certPath, cfg.TunnelID, hostname, false)
+			restoreCancel()
+			if restoreErr != nil {
+				restoreFailed = append(restoreFailed, hostname)
+			} else {
+				restored = append(restored, hostname)
+			}
+		}
+		restarted := false
+		restartFailed := false
+		if previousStatus.Running && previousStatus.Mode == "background" {
+			_, _, restartErr := manager.StartBackground(cfg)
+			restarted = restartErr == nil
+			restartFailed = restartErr != nil
+		}
+		typed := failure.As(cause)
+		typed.Data = map[string]any{
+			"reset": false, "dns_removed_before_failure": dnsRemovedHostnames,
+			"dns_restored": restored, "dns_restore_failed": restoreFailed,
+			"tunnel_was_running": previousStatus.Running, "tunnel_restarted": restarted,
+		}
+		if len(restoreFailed) > 0 {
+			if typed.Hint != "" {
+				typed.Hint += " "
+			}
+			typed.Hint += "Some DNS rollback also failed; retry `cfdev reset` or inspect the listed hostnames."
+		}
+		if previousStatus.Running && previousStatus.Mode == "foreground" {
+			if typed.Hint != "" {
+				typed.Hint += " "
+			}
+			typed.Hint += "The foreground tunnel was stopped; run `cfdev up` to restore it."
+		} else if restartFailed {
+			if typed.Hint != "" {
+				typed.Hint += " "
+			}
+			typed.Hint += "The background tunnel could not be restored; run `cfdev up -d`."
+		}
+		return typed
+	}
+	remoteReady := clientErr == nil && certErr == nil
+	if remoteReady {
+		api := cloudflare.NewAPI(cert)
+		for index, mapping := range cfg.Mappings {
+			hostname := mapping.Subdomain + "." + cfg.Domain
+			progress.Update(fmt.Sprintf("Removing %s (%d/%d)…", hostname, index+1, len(cfg.Mappings)))
+			managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+			deleted, deleteErr := api.DeleteOwnedDNS(managementContext, hostname, cfg.TunnelID)
+			cancel()
+			if deleteErr != nil && !inv.Options.Force {
+				return result{}, rollbackRemoteCleanup(deleteErr)
+			}
+			if deleteErr != nil {
+				warnings = append(warnings, "DNS cleanup failed for "+hostname+": "+deleteErr.Error())
+				continue
+			}
+			if deleted {
+				dnsRemoved++
+				dnsRemovedHostnames = append(dnsRemovedHostnames, hostname)
+			}
+		}
+	}
+
+	tunnelDeleted := false
+	if remoteReady {
+		progress.Update("Deleting this machine's Cloudflare tunnel…")
+		managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+		deleteErr := client.DeleteTunnel(managementContext, certPath, cfg.TunnelID)
+		cancel()
+		if deleteErr != nil && !inv.Options.Force {
+			return result{}, rollbackRemoteCleanup(deleteErr)
+		}
+		if deleteErr != nil {
+			warnings = append(warnings, "Cloudflare tunnel cleanup failed: "+deleteErr.Error())
+		} else {
+			tunnelDeleted = true
+		}
+	}
+
+	credentialRemoved := false
+	if tunnelDeleted && filepath.Base(cfg.CredentialsFile) == cfg.TunnelID+".json" {
+		if removeErr := os.Remove(cfg.CredentialsFile); removeErr == nil {
+			credentialRemoved = true
+		} else if !os.IsNotExist(removeErr) {
+			warnings = append(warnings, "The tunnel credential could not be removed: "+removeErr.Error())
+		}
+	}
+	progress.Update("Removing local cfdev state…")
+	if err := removeMachineState(paths); err != nil {
+		return result{}, err
+	}
+	progress.Stop()
+	if !inv.Options.JSON {
+		for _, warning := range warnings {
+			view.Warning(warning)
+		}
+	}
+	return result{Data: map[string]any{
+		"reset": true, "domain": cfg.Domain, "tunnel_id": cfg.TunnelID,
+		"stopped": stopped, "dns_removed": dnsRemoved, "tunnel_deleted": tunnelDeleted,
+		"credential_removed": credentialRemoved, "origin_certificate_preserved": true,
+		"warnings": warnings,
+	}, Summary: "Stopped and forgot this machine. Run `cfdev setup` to start again."}, nil
+}
+
+func removeMachineState(paths config.Paths) error {
+	for _, path := range []string{paths.Config, paths.Ingress, paths.Process, paths.ConnectorPID, paths.Log, paths.MachineID} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return failure.Wrap("RESET_FAILED", "could not remove local cfdev state", failure.ExitConfig, err)
+		}
+	}
+	return nil
 }
 
 func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (result, error) {
@@ -1032,7 +1605,7 @@ func (app *App) dashboard(view *ui.UI) (result, error) {
 		view.Line("  Permanent URLs for local projects on your Cloudflare domain.")
 		view.Line("  One browser sign-in. No copied tokens. No tunnel configuration.")
 		view.Line("")
-		view.Info("Run `cfdev init` to get started.")
+		view.Info("Run `cfdev setup` to get started.")
 		return result{}, nil
 	}
 	inv := cli.Invocation{Command: "list", Options: view.Options}

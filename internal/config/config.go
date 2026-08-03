@@ -89,7 +89,7 @@ func Load(paths Paths) (*Config, error) {
 	contents, err := os.ReadFile(paths.Config)
 	if os.IsNotExist(err) {
 		failureErr := failure.New("NOT_INITIALIZED", "cfdev has not been set up yet", failure.ExitConfig)
-		failureErr.Hint = "Run `cfdev init` to sign in and create your permanent tunnel."
+		failureErr.Hint = "Run `cfdev setup` to sign in and create your permanent tunnel."
 		return nil, failureErr
 	}
 	if err != nil {
@@ -127,10 +127,34 @@ func Save(paths Paths, cfg *Config) error {
 		return err
 	}
 	encoded = append(encoded, '\n')
+	previousConfig, previousErr := os.ReadFile(paths.Config)
+	configExisted := previousErr == nil
+	if previousErr != nil && !os.IsNotExist(previousErr) {
+		return failure.Wrap("CONFIG_READ_FAILED", "could not preserve the current cfdev config before saving", failure.ExitConfig, previousErr)
+	}
 	if err := atomicWrite(paths.Config, encoded, 0o600); err != nil {
 		return failure.Wrap("CONFIG_WRITE_FAILED", "could not save the cfdev config", failure.ExitConfig, err)
 	}
 	if err := WriteIngress(paths, cfg); err != nil {
+		rollbackErr := restoreConfig(paths.Config, previousConfig, configExisted)
+		if rollbackErr != nil {
+			typed := failure.As(err)
+			if typed.Hint != "" {
+				typed.Hint += " "
+			}
+			typed.Hint += "Restoring the previous config also failed: " + rollbackErr.Error()
+			return typed
+		}
+		return err
+	}
+	return nil
+}
+
+func restoreConfig(path string, previous []byte, existed bool) error {
+	if existed {
+		return atomicWrite(path, previous, 0o600)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil

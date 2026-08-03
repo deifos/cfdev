@@ -53,7 +53,7 @@ try {
     }
 
     & $cfdevDestination --version
-    Write-Host "cfdev is installed. Open a new terminal and run: cfdev init"
+    Write-Host "cfdev is installed. Open a new terminal and run: cfdev setup"
 } finally {
     Remove-Item -LiteralPath $cfdevBinaryDownload -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $cfdevChecksumsDownload -Force -ErrorAction SilentlyContinue

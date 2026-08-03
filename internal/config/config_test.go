@@ -78,6 +78,37 @@ func TestSaveAtomicallyReplacesExistingConfig(t *testing.T) {
 	}
 }
 
+func TestSaveRestoresConfigWhenIngressWriteFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CFDEV_HOME", home)
+	paths, _ := ResolvePaths()
+	cfg := &Config{
+		Version: 1, Domain: "example.com", TunnelName: "cfdev-test", TunnelID: testTunnelID,
+		CredentialsFile: filepath.Join(home, "credential.json"), MachineID: "test", Mappings: []Mapping{},
+	}
+	if err := Save(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(paths.Ingress); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.Ingress, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Domain = "example.net"
+	if err := Save(paths, cfg); err == nil {
+		t.Fatal("expected ingress write to fail")
+	}
+	loaded, err := Load(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Domain != "example.com" {
+		t.Fatalf("domain = %q, want rolled-back example.com", loaded.Domain)
+	}
+}
+
 func TestValidationRejectsDuplicateMappings(t *testing.T) {
 	cfg := &Config{
 		Version: 1, Domain: "example.com", TunnelName: "cfdev-test", TunnelID: testTunnelID,

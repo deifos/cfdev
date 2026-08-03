@@ -1,6 +1,6 @@
 ---
 name: cfdev
-description: Operate cfdev to give local apps permanent URLs on a Cloudflare domain. Use when Codex needs to install, initialize, or upgrade cfdev; expose one or more localhost ports; add, claim, list, clear, or remove permanent project subdomains; move a URL between Windows, macOS, or Linux machines; manage the shared foreground/background tunnel; automate cfdev with JSON; or diagnose authentication, DNS, HTTP 404, configuration reload, and local port-health problems.
+description: Operate cfdev to give local apps permanent URLs on a Cloudflare domain. Use when Codex needs to install, initialize or set up, reset, or upgrade cfdev; authenticate, validate, show, or switch the active domain; expose localhost ports; add, claim, list, clear, or remove permanent project subdomains; move a URL between machines; manage the shared tunnel; automate cfdev with JSON; or diagnose authentication, DNS, routing, configuration, and local port-health problems.
 ---
 
 # Use cfdev
@@ -24,9 +24,15 @@ Use `cfdev doctor` when authentication, credentials, DNS, ingress, or process he
 
 Run cfdev only on a computer hosting an app. Prefer a published installer or package-manager build because release downloads are checksum-verified. Use `darwin-arm64` for Apple Silicon and `darwin-amd64` for Intel when selecting a raw Mac binary. If no release exists, report that honestly; use a source build only with the user's authorization and an available Go toolchain.
 
-Run `cfdev init` once on each computer and let the human complete Cloudflare browser authorization. In automation, use `cfdev init --json`. If it returns `AUTH_REQUIRED` with exit code `2`, ask the human to run interactive `cfdev init`; never bypass browser authentication.
+Run `cfdev setup` once on each computer and let the human complete Cloudflare browser authorization. In automation, use `cfdev setup --json`. If it returns `AUTH_REQUIRED` with exit code `2`, ask the human to run interactive `cfdev setup`; never bypass browser authentication. If it returns `DOMAIN_REQUIRED`, obtain the intended domain and use the supplied explicit retry command. A successful explicit fallback with `domain_validated:false` means setup continued through a discovery outage; report that state and validate with `cfdev doctor` once Cloudflare is reachable. `cfdev init` is a compatibility alias.
 
-Never print, copy, commit, transfer, or delete `~/.cloudflared/cert.pem` or tunnel credential JSON files.
+Never print, copy, commit, or transfer origin certificates or tunnel credential JSON files. `cfdev domain` may safely move its own saved origin certificates within `~/.cloudflared`; `cfdev reset` preserves origin certificates and deletes only the credential for the exact tunnel it successfully unregisters.
+
+## Switch domains or forget a machine
+
+Use `cfdev domain` to inspect the active domain. Before `cfdev domain <domain>`, remove all mappings with `cfdev clear`; the switch deliberately refuses to abandon live hostnames. A switch validates browser authorization and stays within the same Cloudflare account. For another account, run `cfdev reset` first, then `cfdev setup <domain>`.
+
+`cfdev reset` is destructive and requires explicit user approval. It stops the exact managed connector, deletes exact cfdev-owned DNS and the machine tunnel, removes that tunnel's credential and local machine identity, and preserves the origin certificate and managed binary. For approved non-interactive use, inspect state first and pass `--yes --json`; use `--force` only when the user accepts that failed remote cleanup may leave Cloudflare resources behind.
 
 ## Expose apps
 

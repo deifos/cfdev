@@ -73,11 +73,16 @@ func FindOriginCert() string {
 	return candidates[0]
 }
 
+func DefaultOriginCertPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cloudflared", "cert.pem")
+}
+
 func ReadOriginCert(certPath string) (OriginCert, error) {
 	contents, err := os.ReadFile(certPath)
 	if err != nil {
 		failureErr := failure.Wrap("AUTH_NOT_FOUND", "Cloudflare browser authentication was not found", failure.ExitConfig, err)
-		failureErr.Hint = "Run `cfdev init` once to authenticate in your browser."
+		failureErr.Hint = "Run `cfdev setup` once to authenticate in your browser."
 		return OriginCert{}, failureErr
 	}
 	var cert OriginCert
@@ -232,7 +237,7 @@ func (api *API) request(ctx context.Context, method, endpoint string) (apiEnvelo
 			exitCode = failure.ExitConfig
 		}
 		failureErr := failure.New(code, fmt.Sprintf("Cloudflare rejected the request: %s", reason), exitCode)
-		failureErr.Hint = "Run `cfdev init --force` if your browser authorization has expired."
+		failureErr.Hint = "Run `cfdev setup --force` if your browser authorization has expired."
 		return apiEnvelope{}, failureErr
 	}
 	return envelope, nil

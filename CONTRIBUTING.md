@@ -19,8 +19,9 @@ Keep the dependency set empty unless there is a strong reason to add a module. P
 
 1. Describe the user-facing change and any security impact.
 2. Include or update tests when behavior changes.
-3. Keep docs and the agent skill in `skills/cfdev` aligned with command behavior.
-4. Do not commit secrets, `cert.pem`, tunnel credentials, or `dist/` binaries.
+3. Add user-facing changes under `Unreleased` in `CHANGELOG.md`.
+4. Keep docs and the agent skill in `skills/cfdev` aligned with command behavior.
+5. Do not commit secrets, origin certificates, tunnel credentials, or `dist/` binaries.
 
 ## Security issues
 

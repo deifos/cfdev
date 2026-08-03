@@ -11,9 +11,11 @@ cfdev manages local Cloudflare Tunnel state on the machine where it runs:
 - Browser-login origin certificates under `~/.cloudflared/` (or the equivalent on your OS)
 - Tunnel credential JSON files under that same directory
 - Local non-secret state under `~/.cfdev/`
-- DNS records on the Cloudflare zone authorized during `cfdev init`
+- DNS records on the Cloudflare zone authorized during `cfdev setup`
 
-cfdev never asks you to paste an API token. Do not copy, commit, or transfer `cert.pem` or tunnel credential files between machines or into git.
+cfdev never asks you to paste an API token. Do not copy, commit, or transfer origin certificates or tunnel credential files between machines or into git.
+
+`cfdev domain` may move origin certificates within the protected Cloudflare directory so a user can switch back to a previously authorized domain without duplicating the secret. `cfdev reset` preserves origin certificates and deletes a tunnel credential only after Cloudflare confirms deletion of that exact tunnel.
 
 ## Release integrity
 

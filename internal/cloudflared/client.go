@@ -67,7 +67,7 @@ func (client *Client) Login(ctx context.Context, stdin io.Reader, stdout, stderr
 	command.Stderr = stderr
 	if err := command.Run(); err != nil {
 		failureErr := failure.Wrap("AUTH_FAILED", "Cloudflare browser authentication did not complete", failure.ExitConfig, err)
-		failureErr.Hint = "Run `cloudflared tunnel login` directly for more detail, then retry `cfdev init`."
+		failureErr.Hint = "Run `cloudflared tunnel login` directly for more detail, then retry `cfdev setup`."
 		return failureErr
 	}
 	return nil
@@ -104,6 +104,16 @@ func (client *Client) CreateTunnel(ctx context.Context, certPath, name string) (
 		return Tunnel{}, outputError("tunnel creation", fmt.Errorf("missing tunnel ID"))
 	}
 	return tunnel, nil
+}
+
+func (client *Client) DeleteTunnel(ctx context.Context, certPath, tunnelID string) error {
+	result := client.Run(ctx, "tunnel", "--origincert", certPath, "delete", tunnelID)
+	if result.Err != nil {
+		failureErr := commandError("could not delete the Cloudflare tunnel", result)
+		failureErr.Hint = "Make sure this machine's tunnel is stopped, then retry `cfdev reset`."
+		return failureErr
+	}
+	return nil
 }
 
 func (client *Client) RouteDNS(ctx context.Context, certPath, tunnelID, hostname string, force bool) error {
@@ -188,7 +198,7 @@ func firstNonEmpty(values ...string) string {
 
 func notFound() error {
 	err := failure.New("CLOUDFLARED_NOT_FOUND", "cloudflared is required but was not found", failure.ExitDependency)
-	err.Hint = "Run `cfdev init` to install a managed copy."
+	err.Hint = "Run `cfdev setup` to install a managed copy."
 	return err
 }
 

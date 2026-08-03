@@ -26,7 +26,7 @@ We will not compete on having the largest tunnel-management feature set. Multi-a
 The normal first-time flow should be:
 
 ```text
-$ cfdev init
+$ cfdev setup
 
 ✓ cloudflared is ready
 → Opening Cloudflare in your browser…
@@ -89,7 +89,7 @@ The only external runtime component is `cloudflared`, because it provides the of
 
 ### Installation behavior
 
-On `cfdev init`:
+On `cfdev setup`:
 
 1. Use an existing `cloudflared` installation when available.
 2. If it is missing, offer to install a managed copy under `~/.cfdev/bin`.
@@ -100,7 +100,7 @@ This makes the product feel self-contained while still relying on Cloudflare’s
 
 ## 4. Authentication and automatic setup
 
-`cfdev init` will:
+`cfdev setup` will:
 
 1. Check or install `cloudflared`.
 2. Detect an existing `~/.cloudflared/cert.pem` and reuse it when valid.
@@ -111,13 +111,13 @@ This makes the product feel self-contained while still relying on Cloudflare’s
 7. Create or reuse one long-lived tunnel for this machine, internally named `cfdev-<machine>-<short-id>`.
 8. Save the local cfdev configuration and generate the ingress configuration.
 
-Fallback: if automatic domain discovery ever fails, show one short prompt for the domain. A non-interactive user can always run `cfdev init example.com`.
+Fallback: if automatic domain discovery ever fails, show one short prompt for the domain. JSON mode returns `DOMAIN_REQUIRED` with an explicit retry command. A non-interactive user can run `cfdev setup example.com`; its result reports `domain_validated: false` until Cloudflare can be checked again. Existing-machine domain switches remain fail-closed.
 
 ### Human and agent authentication contract
 
-- `cfdev init` opens the browser, waits for authorization, and completes setup automatically.
-- `cfdev init --json` completes automatically when browser authentication already exists.
-- If authentication is missing in JSON mode, it exits with code `2` and an `AUTH_REQUIRED` result that tells the agent to ask the human to run `cfdev init` once.
+- `cfdev setup` opens the browser, waits for authorization, and completes setup automatically.
+- `cfdev setup --json` completes automatically when browser authentication already exists.
+- If authentication is missing in JSON mode, it exits with code `2` and an `AUTH_REQUIRED` result that tells the agent to ask the human to run `cfdev setup` once.
 - `--yes` skips safe confirmations, but never pretends that browser authentication can happen without a person.
 - After that one-time browser action, all normal commands are fully unattended and agent-friendly.
 
@@ -127,12 +127,12 @@ Example authentication handoff:
 {
   "ok": false,
   "data": {
-    "interactive_command": "cfdev init"
+    "interactive_command": "cfdev setup"
   },
   "summary": "Cloudflare authentication is required",
   "error": {
     "code": "AUTH_REQUIRED",
-    "message": "Run cfdev init once to authenticate in your browser."
+    "message": "Run cfdev setup once to authenticate in your browser."
   }
 }
 ```
@@ -140,15 +140,17 @@ Example authentication handoff:
 Security boundaries:
 
 - Never print, log, or copy the account token contained in `cert.pem`.
-- Keep the account certificate and tunnel credential in Cloudflare’s normal protected directory.
+- Keep origin certificates and active tunnel credentials in Cloudflare’s normal protected directory. `domain` moves certificates only within that directory; confirmed `reset` preserves certificates and removes only the deleted tunnel's credential.
 - Store only paths and non-secret identifiers in `~/.cfdev/config.json`.
 - Write cfdev state files with user-only permissions where the operating system supports them.
 
-## 5. v0.1 command surface
+## 5. Current command surface
 
 | Command | Behavior |
 | --- | --- |
-| `cfdev init [domain]` | Browser sign-in and automatic tunnel setup |
+| `cfdev setup [domain]` | Browser sign-in and automatic tunnel setup (`init` remains an alias) |
+| `cfdev domain [domain]` | Show the current domain or validate authorization and switch within the current Cloudflare account; refuses while mappings exist |
+| `cfdev reset` | Confirm, stop the connector, remove exact owned DNS and the machine tunnel, delete its credential, and forget local machine state |
 | `cfdev <port>` | Derive a clean name from the current folder, add it, and run the tunnel |
 | `cfdev add <name> <port>` | Create permanent DNS and map it to the local HTTP port |
 | `cfdev claim <name> <port>` | Move an existing Cloudflare Tunnel hostname to this machine without changing its URL |
@@ -176,7 +178,7 @@ Common flags:
 - `--detach` / `-d` for background operation.
 - `--help` for concise examples and command-specific help.
 
-Every major command is idempotent. Repeating `init`, an identical `add`, `remove` for an already absent cfdev-owned mapping, `up` for a running tunnel, or `down` for a stopped tunnel returns a successful description of the current state rather than creating duplicates or failing unnecessarily.
+Every major command is idempotent. Repeating `setup`, `domain` for the active domain, `reset` for an already reset machine, an identical `add`, `remove` for an already absent cfdev-owned mapping, `up` for a running tunnel, or `down` for a stopped tunnel returns a successful description of the current state rather than creating duplicates or failing unnecessarily.
 
 ## 6. Configuration ownership
 
@@ -197,6 +199,7 @@ Cloudflare owns:
 ```text
 ~/.cloudflared/
 ├── cert.pem                browser-login account certificate
+├── cfdev-cert-<domain>.pem saved authorization for a previously active domain
 └── <tunnel-id>.json        credential for the single tunnel
 ```
 
@@ -302,7 +305,7 @@ Errors should state what happened and the next useful action:
 
 ```text
 ✗ cloudflared is not installed.
-  Run `cfdev init` to install a managed copy.
+  Run `cfdev setup` to install a managed copy.
 ```
 
 Proposed exit codes:

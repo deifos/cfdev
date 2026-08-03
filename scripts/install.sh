@@ -80,4 +80,4 @@ case ":$PATH:" in
 esac
 
 "$cfdev_install_dir/cfdev" --version
-echo "cfdev is installed. Open a new terminal and run: cfdev init"
+echo "cfdev is installed. Open a new terminal and run: cfdev setup"
