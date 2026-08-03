@@ -40,7 +40,7 @@ macOS or Linux:
 curl -fsSL https://github.com/deifos/cfdev/releases/latest/download/install.sh | sh
 ```
 
-Every version tag builds native binaries for Windows, macOS, and Linux on AMD64 and ARM64. The release also includes `checksums.txt`, build attestations, and generated Homebrew, Winget, and Scoop definitions. Catalog commands such as `brew install deifos/tap/cfdev`, `winget install Deifos.cfdev`, and a Scoop bucket install will be enabled after their repositories accept the first public release.
+Every version tag builds native binaries for Windows, macOS, and Linux on AMD64 and ARM64. macOS binaries are Developer ID signed, hardened-runtime enabled, and notarized by Apple on native Intel and Apple silicon GitHub runners. The release also includes `checksums.txt`, build attestations, and generated Homebrew, Winget, and Scoop definitions. Catalog commands such as `brew install deifos/tap/cfdev`, `winget install Deifos.cfdev`, and a Scoop bucket install will be enabled after their repositories accept the first public release.
 
 Until then, build from source with Go 1.24 or newer:
 
@@ -261,11 +261,11 @@ go build -trimpath -o dist/cfdev ./cmd/cfdev
 To publish a release after the repository is public and CI is green:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
-The release workflow tests and cross-builds all six supported targets, creates checksums and build attestations, renders package-manager definitions with exact hashes, and publishes one GitHub Release. `cfdev upgrade` uses that release metadata and refuses to install a binary that does not match its checksum. Package-managed installations direct users back to their package manager instead.
+The release workflow tests all supported targets, builds Linux and Windows on Ubuntu, builds and Developer ID signs each macOS architecture on its matching native GitHub runner, waits for Apple notarization, creates checksums and build attestations, renders package-manager definitions with exact hashes, and publishes one GitHub Release. A manual run performs the same build, signing, notarization, and attestation checks without publishing a release. `cfdev upgrade` uses the release metadata and refuses to install a binary that does not match its checksum. Package-managed installations direct users back to their package manager instead.
 
 The implementation uses only the Go standard library. The approved product and technical decisions are recorded in [DRAFT.md](DRAFT.md).
 
