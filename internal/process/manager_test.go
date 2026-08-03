@@ -2,15 +2,42 @@ package process
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/deifos/cfdev/internal/cloudflared"
 	"github.com/deifos/cfdev/internal/config"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("CFDEV_TEST_PROCESS_CHILD") == "1" {
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
+	if os.Getenv("CFDEV_TEST_PROCESS_PARENT") == "1" {
+		executable, err := os.Executable()
+		if err != nil {
+			os.Exit(2)
+		}
+		command := exec.Command(executable)
+		command.Env = append(os.Environ(), "CFDEV_TEST_PROCESS_CHILD=1")
+		configureBackground(command)
+		if err := command.Start(); err != nil {
+			os.Exit(2)
+		}
+		fmt.Println(command.Process.Pid)
+		if err := command.Process.Release(); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestForegroundWritersHideDetailsUnlessVerbose(t *testing.T) {
 	var logOutput bytes.Buffer
@@ -57,40 +84,42 @@ func TestRemoveStateOnlyRemovesMatchingProcess(t *testing.T) {
 }
 
 func TestManagerRecognizesAndStopsItsExactProcess(t *testing.T) {
-	var binary string
-	var args []string
-	if runtime.GOOS == "windows" {
-		binary, _ = exec.LookPath("ping.exe")
-		args = []string{"127.0.0.1", "-n", "30"}
-	} else {
-		binary, _ = exec.LookPath("sleep")
-		args = []string{"30"}
-	}
-	if binary == "" {
-		t.Skip("no suitable long-running test process")
-	}
-	command := exec.Command(binary, args...)
-	configureBackground(command)
-	if err := command.Start(); err != nil {
+	binary, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = command.Process.Kill() }()
+	parent := exec.Command(binary)
+	parent.Env = append(os.Environ(), "CFDEV_TEST_PROCESS_PARENT=1")
+	output, err := parent.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		t.Fatalf("invalid background PID %q: %v", output, err)
+	}
+	defer func() {
+		if process, err := os.FindProcess(pid); err == nil {
+			_ = process.Kill()
+			_ = process.Release()
+		}
+	}()
 	t.Setenv("CFDEV_HOME", t.TempDir())
 	paths, _ := config.ResolvePaths()
 	manager := Manager{Paths: paths, Client: &cloudflared.Client{Binary: binary}}
-	state := State{PID: command.Process.Pid, Binary: binary, StartedAt: time.Now().UTC(), Mode: "background", TunnelID: "test"}
+	state := State{PID: pid, Binary: binary, StartedAt: time.Now().UTC(), Mode: "background", TunnelID: "test"}
 	if err := manager.writeState(state); err != nil {
 		t.Fatal(err)
 	}
 	status := manager.Status()
-	if !status.Running || status.PID != command.Process.Pid {
+	if !status.Running || status.PID != pid {
 		t.Fatalf("unexpected status: %#v", status)
 	}
 	stopped, err := manager.Stop()
 	if err != nil || !stopped {
 		t.Fatalf("Stop = %v, %v", stopped, err)
 	}
-	if alive(command.Process.Pid) {
+	if alive(pid) {
 		t.Fatal("managed process is still alive")
 	}
 	if _, err := os.Stat(paths.Process); !os.IsNotExist(err) {

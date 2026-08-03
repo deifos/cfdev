@@ -3,10 +3,12 @@ package updater
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -105,5 +107,39 @@ func TestUpgradeDoesNotDownloadWhenAlreadyCurrent(t *testing.T) {
 	}
 	if result.Updated || result.CurrentVersion != "0.1.0" || result.LatestVersion != "0.1.0" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestUpgradeOverrideRejectsBadChecksumEndToEnd(t *testing.T) {
+	binary := []byte("tampered cfdev release")
+	name := assetName(runtime.GOOS, runtime.GOARCH)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/release":
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"tag_name": "v9.9.9",
+				"assets": []map[string]any{
+					{"name": name, "browser_download_url": server.URL + "/binary", "size": len(binary)},
+					{"name": "checksums.txt", "browser_download_url": server.URL + "/checksums", "size": 68 + len(name)},
+				},
+			})
+		case "/checksums":
+			_, _ = fmt.Fprintf(writer, "%s  %s\n", strings.Repeat("0", 64), name)
+		case "/binary":
+			_, _ = writer.Write(binary)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("CFDEV_UPDATE_URL", server.URL+"/release")
+
+	result, err := Upgrade(context.Background(), "0.1.0")
+	if typed := failure.As(err); typed.Code != "UPGRADE_CHECKSUM_MISMATCH" {
+		t.Fatalf("unexpected error: %#v", typed)
+	}
+	if result.Updated {
+		t.Fatalf("bad-checksum release was marked updated: %#v", result)
 	}
 }

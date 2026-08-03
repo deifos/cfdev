@@ -17,6 +17,20 @@ import (
 	"github.com/deifos/cfdev/internal/config"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("CFDEV_TEST_CLOUDFLARED_HELPER") == "1" {
+		encoded, err := json.Marshal(os.Args[1:])
+		if err != nil {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(os.Getenv("CFDEV_TEST_CLOUDFLARED_LOG"), encoded, 0o600); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestEmptyDashboardJSON(t *testing.T) {
 	t.Setenv("CFDEV_HOME", t.TempDir())
 	var stdout, stderr bytes.Buffer
@@ -233,5 +247,137 @@ func TestFullHostnameRemovalAndClearOwnedHostnames(t *testing.T) {
 	}
 	if len(saved.Mappings) != 0 {
 		t.Fatalf("mappings were not cleared: %#v", saved.Mappings)
+	}
+}
+
+func TestClaimAndForceDNSConflictMatrix(t *testing.T) {
+	foreignTunnel := map[string]any{
+		"id": "foreign-tunnel", "name": "demo.example.com", "type": "CNAME",
+		"content": "999e4567-e89b-42d3-a456-426614174999.cfargotunnel.com",
+	}
+	unrelatedAddress := map[string]any{
+		"id": "unrelated-address", "name": "demo.example.com", "type": "A", "content": "192.0.2.10",
+	}
+	unrelatedText := map[string]any{
+		"id": "unrelated-text", "name": "demo.example.com", "type": "TXT", "content": "keep-me",
+	}
+	tests := []struct {
+		name          string
+		args          []string
+		records       []map[string]any
+		wantExit      int
+		wantError     string
+		wantRoute     bool
+		wantOverwrite bool
+		wantClaimed   bool
+	}{
+		{
+			name: "claim safely moves a foreign tunnel CNAME", args: []string{"claim", "demo", "3000", "--json"},
+			records: []map[string]any{foreignTunnel}, wantRoute: true, wantOverwrite: true, wantClaimed: true,
+		},
+		{
+			name: "claim refuses an unrelated address record", args: []string{"claim", "demo", "3000", "--json"},
+			records: []map[string]any{unrelatedAddress}, wantExit: 5, wantError: "DNS_CONFLICT",
+		},
+		{
+			name: "claim refuses mixed tunnel and unrelated records", args: []string{"claim", "demo", "3000", "--json"},
+			records: []map[string]any{foreignTunnel, unrelatedText}, wantExit: 5, wantError: "DNS_CONFLICT",
+		},
+		{
+			name: "plain add points foreign tunnel users to claim", args: []string{"add", "demo", "3000", "--json"},
+			records: []map[string]any{foreignTunnel}, wantExit: 5, wantError: "DNS_CONFLICT",
+		},
+		{
+			name: "force deliberately replaces an unrelated record", args: []string{"add", "demo", "3000", "--force", "--json"},
+			records: []map[string]any{unrelatedAddress}, wantRoute: true, wantOverwrite: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("CFDEV_HOME", home)
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			logPath := filepath.Join(home, "cloudflared-args.json")
+			t.Setenv("CFDEV_CLOUDFLARED", executable)
+			t.Setenv("CFDEV_TEST_CLOUDFLARED_HELPER", "1")
+			t.Setenv("CFDEV_TEST_CLOUDFLARED_LOG", logPath)
+
+			certPath := filepath.Join(home, "cert.pem")
+			certJSON := []byte(`{"zoneID":"zone-test","accountID":"account-test","apiToken":"token-test"}`)
+			if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "ARGO TUNNEL TOKEN", Bytes: certJSON}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CFDEV_ORIGIN_CERT", certPath)
+
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.Method != http.MethodGet || request.URL.Path != "/zones/zone-test/dns_records" {
+					writer.WriteHeader(http.StatusNotFound)
+					_, _ = writer.Write([]byte(`{"success":false,"errors":[{"message":"not found"}]}`))
+					return
+				}
+				_ = json.NewEncoder(writer).Encode(map[string]any{"success": true, "result": test.records})
+			}))
+			defer server.Close()
+			t.Setenv("CFDEV_API_URL", server.URL)
+
+			paths, _ := config.ResolvePaths()
+			cfg := &config.Config{
+				Version: 1, Domain: "example.com", TunnelName: "cfdev-test-a1b2c3",
+				TunnelID:        "123e4567-e89b-42d3-a456-426614174000",
+				CredentialsFile: filepath.Join(home, "credential.json"), MachineID: "test-a1b2c3",
+				Mappings: []config.Mapping{},
+			}
+			if err := config.Save(paths, cfg); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			application := New(bytes.NewBuffer(nil), &stdout, &stderr, t.TempDir())
+			if code := application.Run(context.Background(), test.args); code != test.wantExit {
+				t.Fatalf("exit code = %d, want %d; stdout=%s stderr=%s", code, test.wantExit, stdout.String(), stderr.String())
+			}
+			var envelope struct {
+				OK    bool           `json:"ok"`
+				Data  map[string]any `json:"data"`
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+				t.Fatalf("invalid JSON output %q: %v", stdout.String(), err)
+			}
+			if envelope.Error.Code != test.wantError {
+				t.Fatalf("error code = %q, want %q; output=%s", envelope.Error.Code, test.wantError, stdout.String())
+			}
+			if claimed, _ := envelope.Data["claimed"].(bool); claimed != test.wantClaimed {
+				t.Fatalf("claimed = %v, want %v; output=%s", claimed, test.wantClaimed, stdout.String())
+			}
+
+			routeArgs := []string{}
+			if contents, readErr := os.ReadFile(logPath); readErr == nil {
+				if err := json.Unmarshal(contents, &routeArgs); err != nil {
+					t.Fatal(err)
+				}
+			} else if !os.IsNotExist(readErr) {
+				t.Fatal(readErr)
+			}
+			if routed := len(routeArgs) > 0; routed != test.wantRoute {
+				t.Fatalf("route called = %v, want %v; args=%v", routed, test.wantRoute, routeArgs)
+			}
+			overwrite := false
+			for _, argument := range routeArgs {
+				if argument == "--overwrite-dns" {
+					overwrite = true
+				}
+			}
+			if overwrite != test.wantOverwrite {
+				t.Fatalf("overwrite = %v, want %v; args=%v", overwrite, test.wantOverwrite, routeArgs)
+			}
+		})
 	}
 }

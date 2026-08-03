@@ -15,6 +15,10 @@ cfdev manages local Cloudflare Tunnel state on the machine where it runs:
 
 cfdev never asks you to paste an API token. Do not copy, commit, or transfer `cert.pem` or tunnel credential files between machines or into git.
 
+## Release integrity
+
+cfdev installers verify downloaded binaries against the SHA-256 checksums published with each GitHub Release. This detects corruption or a binary that does not match that release metadata, but it is not independent proof of authorship: anyone able to replace both a release asset and its published checksum could make them agree. GitHub's build provenance attestations provide an additional verification signal for release binaries.
+
 ## Reporting a vulnerability
 
 Please report security issues privately. Prefer one of:
