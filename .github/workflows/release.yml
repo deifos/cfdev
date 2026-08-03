@@ -195,7 +195,9 @@ jobs:
             exit 1
           fi
 
-          spctl --assess --type execute --verbose=4 "dist/${{ matrix.output }}"
+          # Bare Mach-O command-line tools are not app bundles, so spctl reports
+          # "does not seem to be an app" even after successful notarization.
+          codesign --verify --strict --verbose=2 "dist/${{ matrix.output }}"
       - name: Attest signed binary
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
