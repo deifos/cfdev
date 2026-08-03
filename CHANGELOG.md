@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Add a repository-level `AGENTS.md` working agreement covering implementation quality, safety boundaries, required tests, documentation synchronization, verification, and release discipline for coding agents.
+- Add the loopback-only `cfdev inspect` dashboard with a live request list, filtering, headers, local targets, status and timing, copy-as-curl, and one-shot replay to the original localhost target.
+- Add prospective `--capture-bodies` support that preserves exact request and response bytes for webhook debugging.
+
+### Changed
+
+- Route tunnel traffic through a persistent local gateway so request history survives mapping changes and `cloudflared` restarts, while falling back to direct localhost routing if the gateway cannot start.
+- Return a clear cfdev error page when a mapped local app is not accepting connections, and report separate empty, tunnel-down, and app-down states in the inspector.
+
+### Security
+
+- Bind the inspector and gateway only to `127.0.0.1`, keep history in memory, cap history at 200 requests / 1 MiB per body / 32 MiB total body storage, and evict oldest entries first.
+- Redact authorization and cookie headers from display and omit them from replay and generated curl commands while preserving webhook signature headers.
+- Disable body capture and replay for streaming and upgraded connections, and replay only to the exact local target captured with the original request.
 
 ## [0.2.0] - 2026-08-03
 

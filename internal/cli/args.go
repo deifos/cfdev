@@ -9,16 +9,17 @@ import (
 )
 
 type Options struct {
-	JSON    bool
-	Quiet   bool
-	Verbose bool
-	Force   bool
-	All     bool
-	Claim   bool
-	Yes     bool
-	Detach  bool
-	Help    bool
-	Version bool
+	JSON          bool
+	Quiet         bool
+	Verbose       bool
+	Force         bool
+	All           bool
+	Claim         bool
+	Yes           bool
+	Detach        bool
+	CaptureBodies bool
+	Help          bool
+	Version       bool
 }
 
 type Invocation struct {
@@ -56,6 +57,8 @@ func Parse(args []string) (Invocation, error) {
 			options.Yes = true
 		case "--detach", "--background", "-d":
 			options.Detach = true
+		case "--capture-bodies":
+			options.CaptureBodies = true
 		case "--help", "-h":
 			options.Help = true
 		case "--version", "-V":

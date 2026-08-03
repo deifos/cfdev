@@ -1,7 +1,7 @@
 # cfdev implementation draft
 
-**Status:** Implemented; pre-public v0.1 hardening  
-**Target:** v0.1 MVP  
+**Status:** v0.3 request inspector implemented on a release branch
+**Target:** v0.3.0
 **cfdev gives local projects permanent URLs on your Cloudflare domain—with one browser sign-in and one command per project.**
 
 The simplicity of ngrok, without changing URLs, copied tokens, or tunnel configuration.
@@ -18,6 +18,7 @@ Its focused advantages are:
 4. **Permanent project identity** — a project keeps the same URL across restarts, making webhook and OAuth callback configuration dependable.
 5. **Complete automation contract** — stable JSON, meaningful exit codes, idempotent operations, and no hidden prompts after initial authentication.
 6. **Safe machine handoff** — a project URL can move between computers explicitly with `claim`, or automatically when its folder shortcut is run on the new active computer.
+7. **Local traffic visibility** — the built-in inspector makes permanent URLs practical for webhook and OAuth debugging without sending captured traffic to another service.
 
 We will not compete on having the largest tunnel-management feature set. Multi-account management, multi-tunnel dashboards, TCP routing, quick tunnels, and a fully interactive TUI remain outside v0.1.
 
@@ -162,6 +163,7 @@ Security boundaries:
 | `cfdev down` | Gracefully stop the cfdev-managed process |
 | `cfdev status` | Show tunnel process state and local app health |
 | `cfdev open <name>` | Open the permanent URL in the default browser |
+| `cfdev inspect` | Open the loopback-only request inspector; `--capture-bodies` enables exact bodies for future traffic |
 | `cfdev config` | Show config and generated-config paths |
 | `cfdev doctor` | Diagnose installation, auth, credentials, ingress, DNS, and process state |
 | `cfdev upgrade` | Install the latest compatible GitHub Release after SHA-256 verification |
@@ -176,6 +178,7 @@ Common flags:
 - `--all` for bulk mapping removal.
 - `--yes` / `-y` for non-interactive confirmation.
 - `--detach` / `-d` for background operation.
+- `--capture-bodies` for prospective exact request/response body capture in the local inspector.
 - `--help` for concise examples and command-specific help.
 
 Every major command is idempotent. Repeating `setup`, `domain` for the active domain, `reset` for an already reset machine, an identical `add`, `remove` for an already absent cfdev-owned mapping, `up` for a running tunnel, or `down` for a stopped tunnel returns a successful description of the current state rather than creating duplicates or failing unnecessarily.
@@ -191,6 +194,8 @@ Every major command is idempotent. Repeating `setup`, `domain` for the active do
 ├── machine-id              stable local identity for tunnel naming
 ├── process.json            background-process state
 ├── cloudflared.log         foreground and background tunnel diagnostics
+├── inspector.json          protected inspector process/control state
+├── inspector.log           inspector startup diagnostics (never traffic history)
 └── bin/cloudflared         optional managed installation
 ```
 
@@ -262,6 +267,8 @@ The folder shortcut sets the active machine naturally: running `cfdev 3000` insi
 - Before stopping a saved PID, cfdev verifies that it still belongs to the expected `cloudflared` process.
 - `cfdev status` checks the managed process and each configured localhost port without requiring network access.
 - Tunnel logs are kept small through basic rotation.
+- Normal ingress points to a persistent loopback gateway at `127.0.0.1:4041`; the gateway reloads mappings from config, so its in-memory history survives connector reloads.
+- The dashboard/API binds to `127.0.0.1:4040`. If either inspector port cannot bind, tunnel startup writes direct localhost ingress and continues with a warning.
 
 ## 9. Distribution and upgrades
 
@@ -395,3 +402,20 @@ Unless changed during review, implementation will use these defaults:
 11. GitHub Releases are the source of truth for installers, in-app upgrades, checksums, attestations, and generated package manifests.
 
 Implementation follows the three milestones above, with each milestone kept independently testable and reviewable.
+
+## 15. v0.3 request inspector contract
+
+The inspector is a focused local debugging tool, not an observability platform:
+
+- Capture method, path, public hostname, actual localhost target, status, duration, and redacted headers for every completed request.
+- Keep one live request list and detail pane with a text filter. Do not add charts, disk persistence, request editing, auth policies, or project-local config in v0.3.
+- Keep bodies off by default. Enabling them affects only future traffic and preserves the exact bytes used for replay; formatting is a display-only operation.
+- Keep at most 200 exchanges, at most 1 MiB from each request or response body, and at most 32 MiB of captured body bytes in total. Evict oldest entries first. A truncated body is inspectable but not replayable.
+- Replace `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values before storing records. Preserve webhook signature headers. Omit redacted headers from replay and copy-as-curl.
+- Replay once to the exact local target captured with the exchange and record it as a new entry with a replay marker. Never replay to the external sender.
+- Preserve WebSocket upgrades and streams without wrapping their response transport. Record metadata only and disable replay.
+- Keep the gateway alive while mappings and `cloudflared` restart so history survives. `cfdev reset` stops it and removes its protected state; ordinary `down` leaves it available for the next `up`.
+- Show distinct no-traffic, tunnel-down, and local-app-down states. A failed local connection returns a small cfdev error page through the public URL.
+- `cfdev inspect --json` must start or report the inspector without launching a browser. Mutable browser APIs require a same-origin JSON request; process shutdown/settings from the CLI require the random token in `inspector.json`.
+
+The v0.3 verification gate includes transparent HTTP byte forwarding, a real WebSocket upgrade, streaming pass-through, exact binary body capture, size truncation, sensitive-header redaction, signature preservation, safe replay after a mapping changes, count/memory eviction, loopback daemon lifecycle, and history survival across live config changes.

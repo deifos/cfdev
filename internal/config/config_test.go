@@ -54,6 +54,30 @@ func TestSaveLoadAndBuildIngress(t *testing.T) {
 	}
 }
 
+func TestInspectorIngressRoutesEveryHostnameThroughLoopbackGateway(t *testing.T) {
+	home := t.TempDir()
+	paths := Paths{Home: home, Ingress: filepath.Join(home, "cloudflared.yml")}
+	cfg := &Config{
+		Version: 1, Domain: "example.com", TunnelName: "cfdev-test", TunnelID: testTunnelID,
+		CredentialsFile: filepath.Join(home, "credential.json"), MachineID: "test",
+		Mappings: []Mapping{{Subdomain: "web", Port: 3000, Protocol: "http"}, {Subdomain: "api", Port: 8080, Protocol: "http"}},
+	}
+	if err := WriteInspectorIngress(paths, cfg); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(paths.Ingress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	if strings.Count(text, "http://127.0.0.1:4041") != 2 || strings.Contains(text, "localhost:3000") || strings.Contains(text, "localhost:8080") {
+		t.Fatalf("unexpected inspector ingress:\n%s", text)
+	}
+	if direct := BuildIngress(cfg); !strings.Contains(direct, "http://localhost:3000") || strings.Contains(direct, "127.0.0.1:4041") {
+		t.Fatalf("direct fallback ingress is invalid:\n%s", direct)
+	}
+}
+
 func TestSaveAtomicallyReplacesExistingConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CFDEV_HOME", home)
