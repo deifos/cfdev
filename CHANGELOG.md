@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-03
+
 ### Added
 
 - Add a repository-level `AGENTS.md` working agreement covering implementation quality, safety boundaries, required tests, documentation synchronization, verification, and release discipline for coding agents.
@@ -71,7 +73,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Limit automatic DNS replacement and deletion to records that match cfdev's documented ownership rules.
 - Verify managed `cloudflared` downloads and cfdev release upgrades against published SHA-256 manifests.
 
-[Unreleased]: https://github.com/deifos/cfdev/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/deifos/cfdev/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/deifos/cfdev/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/deifos/cfdev/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/deifos/cfdev/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/deifos/cfdev/releases/tag/v0.1.0
