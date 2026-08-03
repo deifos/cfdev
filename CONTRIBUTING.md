@@ -2,6 +2,8 @@
 
 Thanks for helping with cfdev.
 
+Coding agents must also follow the repository working agreement in [AGENTS.md](AGENTS.md).
+
 ## Development
 
 You need Go 1.24 or newer.

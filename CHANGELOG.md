@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Add a repository-level `AGENTS.md` working agreement covering implementation quality, safety boundaries, required tests, documentation synchronization, verification, and release discipline for coding agents.
+
 ## [0.2.0] - 2026-08-03
 
 ### Added
