@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
 
 	"github.com/deifos/cfdev/internal/cli"
 	"github.com/deifos/cfdev/internal/failure"
@@ -25,6 +29,31 @@ type UI struct {
 	Err     io.Writer
 	Options cli.Options
 	Color   bool
+	Animate bool
+	mu      sync.Mutex
+}
+
+var (
+	spinnerDelay    = 120 * time.Millisecond
+	spinnerInterval = 80 * time.Millisecond
+)
+
+var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// Progress provides delayed terminal feedback for operations that may take a
+// moment. It falls back to one static line outside an interactive terminal.
+type Progress struct {
+	ui        *UI
+	message   string
+	stop      chan struct{}
+	done      chan struct{}
+	once      sync.Once
+	mu        sync.Mutex
+	frame     int
+	lastWidth int
+	maxWidth  int
+	active    bool
+	shown     bool
 }
 
 type envelope struct {
@@ -41,18 +70,19 @@ type errorBody struct {
 }
 
 func New(out, errOut io.Writer, options cli.Options) *UI {
-	color := os.Getenv("NO_COLOR") == ""
+	terminal := false
 	if file, ok := out.(*os.File); ok {
-		if info, err := file.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
-			color = false
-		}
-	} else {
-		color = false
+		info, err := file.Stat()
+		terminal = err == nil && info.Mode()&os.ModeCharDevice != 0
 	}
-	if options.JSON {
-		color = false
-	}
-	return &UI{Out: out, Err: errOut, Options: options, Color: color}
+	color := terminal && os.Getenv("NO_COLOR") == "" && !options.JSON
+	animate := animationEnabled(terminal, options)
+	return &UI{Out: out, Err: errOut, Options: options, Color: color, Animate: animate}
+}
+
+func animationEnabled(terminal bool, options cli.Options) bool {
+	return terminal && !options.JSON && !options.Quiet && !options.Verbose &&
+		os.Getenv("CFDEV_NO_SPINNER") == "" && os.Getenv("TERM") != "dumb" && os.Getenv("CI") == ""
 }
 
 func (ui *UI) Success(message string) { ui.Line(ui.Paint(green, "✓") + "  " + message) }
@@ -63,11 +93,15 @@ func (ui *UI) Muted(message string)   { ui.Line(ui.Paint(dim, message)) }
 
 func (ui *UI) Line(message string) {
 	if !ui.Options.Quiet {
+		ui.mu.Lock()
+		defer ui.mu.Unlock()
 		fmt.Fprintln(ui.Out, message)
 	}
 }
 
 func (ui *UI) Error(err *failure.Error) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
 	if ui.Options.JSON {
 		_ = json.NewEncoder(ui.Out).Encode(envelope{
 			OK: false, Data: err.Data, Summary: err.Message,
@@ -102,3 +136,107 @@ func (ui *UI) Green(value string) string  { return ui.Paint(green, value) }
 func (ui *UI) Yellow(value string) string { return ui.Paint(yellow, value) }
 func (ui *UI) Dim(value string) string    { return ui.Paint(dim, value) }
 func (ui *UI) Bold(value string) string   { return ui.Paint(bold, value) }
+
+// Progress starts concise feedback for a potentially slow operation. Animated
+// output is reserved for interactive terminals so pipes, logs, agents, and JSON
+// retain stable line-oriented output.
+func (ui *UI) Progress(message string) *Progress {
+	progress := &Progress{ui: ui, message: message}
+	if ui.Options.JSON || ui.Options.Quiet {
+		return progress
+	}
+	if !ui.Animate {
+		ui.Info(message)
+		return progress
+	}
+	progress.active = true
+	progress.stop = make(chan struct{})
+	progress.done = make(chan struct{})
+	go progress.run()
+	return progress
+}
+
+// Update changes the progress message without adding another terminal line.
+func (progress *Progress) Update(message string) {
+	if progress == nil || !progress.active {
+		return
+	}
+	progress.mu.Lock()
+	defer progress.mu.Unlock()
+	progress.message = message
+	if progress.shown {
+		progress.renderLocked()
+	}
+}
+
+// Stop clears animated progress. It is safe to call more than once.
+func (progress *Progress) Stop() {
+	if progress == nil || !progress.active {
+		return
+	}
+	progress.once.Do(func() {
+		close(progress.stop)
+		<-progress.done
+		progress.clear()
+	})
+}
+
+func (progress *Progress) run() {
+	defer close(progress.done)
+	delay := time.NewTimer(spinnerDelay)
+	defer delay.Stop()
+	select {
+	case <-progress.stop:
+		return
+	case <-delay.C:
+		progress.mu.Lock()
+		progress.shown = true
+		progress.renderLocked()
+		progress.mu.Unlock()
+	}
+
+	ticker := time.NewTicker(spinnerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-progress.stop:
+			return
+		case <-ticker.C:
+			progress.mu.Lock()
+			progress.frame = (progress.frame + 1) % len(spinnerFrames)
+			progress.renderLocked()
+			progress.mu.Unlock()
+		}
+	}
+}
+
+func (progress *Progress) renderLocked() {
+	line := spinnerFrames[progress.frame] + "  " + progress.message
+	width := utf8.RuneCountInString(line)
+	padding := progress.lastWidth - width
+	if padding < 0 {
+		padding = 0
+	}
+	progress.ui.mu.Lock()
+	_, _ = fmt.Fprint(progress.ui.Out, "\r", progress.ui.Paint(cyan, spinnerFrames[progress.frame]), "  ", progress.message, strings.Repeat(" ", padding))
+	progress.ui.mu.Unlock()
+	progress.lastWidth = width
+	if width > progress.maxWidth {
+		progress.maxWidth = width
+	}
+}
+
+func (progress *Progress) clear() {
+	progress.mu.Lock()
+	if !progress.shown {
+		progress.mu.Unlock()
+		return
+	}
+	width := progress.maxWidth
+	progress.shown = false
+	progress.mu.Unlock()
+
+	progress.ui.mu.Lock()
+	_, _ = fmt.Fprint(progress.ui.Out, "\r", strings.Repeat(" ", width), "\r")
+	progress.ui.mu.Unlock()
+}

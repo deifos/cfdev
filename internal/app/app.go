@@ -127,7 +127,7 @@ func (app *App) execute(ctx context.Context, inv cli.Invocation, view *ui.UI) (r
 	case "up":
 		return app.up(ctx, inv, view)
 	case "down":
-		return app.down(inv)
+		return app.down(inv, view)
 	case "status":
 		return app.status(inv, view)
 	case "open":
@@ -190,13 +190,12 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 				return result{}, err
 			}
 		}
-		if !inv.Options.JSON {
-			view.Info("Downloading a verified cloudflared release…")
-		}
+		progress := view.Progress("Downloading a verified cloudflared release…")
 		installContext, cancel := context.WithTimeout(ctx, 3*time.Minute)
 		defer cancel()
 		var release string
 		client, release, err = cloudflared.Install(installContext, paths)
+		progress.Stop()
 		if err != nil {
 			return result{}, err
 		}
@@ -272,6 +271,8 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 			return result{}, err
 		}
 	}
+	tunnelProgress := view.Progress("Preparing this machine's permanent tunnel…")
+	defer tunnelProgress.Stop()
 	managementContext, cancel = context.WithTimeout(ctx, 30*time.Second)
 	tunnels, err := client.ListTunnels(managementContext, certPath, tunnelName)
 	cancel()
@@ -312,6 +313,7 @@ func (app *App) init(ctx context.Context, inv cli.Invocation, view *ui.UI) (resu
 	if err := config.Save(paths, cfg); err != nil {
 		return result{}, err
 	}
+	tunnelProgress.Stop()
 	if !inv.Options.JSON {
 		verb := "Using"
 		if created {
@@ -358,6 +360,8 @@ func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (resul
 		}
 	}
 	hostname := subdomain + "." + cfg.Domain
+	progress := view.Progress("Checking " + hostname + "…")
+	defer progress.Stop()
 	managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	dnsState, err := api.DNSState(managementContext, hostname, cfg.TunnelID)
 	cancel()
@@ -376,13 +380,11 @@ func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (resul
 	}
 	dnsCreated := false
 	if !dnsState.Owned || dnsState.Conflicting {
-		if !inv.Options.JSON {
-			message := "Claiming " + hostname + "…"
-			if claimable {
-				message = "Moving " + hostname + " to this machine…"
-			}
-			view.Info(message)
+		message := "Claiming " + hostname + "…"
+		if claimable {
+			message = "Moving " + hostname + " to this machine…"
 		}
+		progress.Update(message)
 		managementContext, cancel = context.WithTimeout(ctx, 30*time.Second)
 		err = client.RouteDNS(managementContext, certPath, cfg.TunnelID, hostname, inv.Options.Force || claimable)
 		cancel()
@@ -399,6 +401,7 @@ func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (resul
 		data["changed"] = false
 		return result{Data: data, Summary: fmt.Sprintf("https://%s already points to localhost:%d.", hostname, port)}, nil
 	}
+	progress.Update("Updating local routing…")
 	mapping := config.Mapping{Subdomain: subdomain, Port: port, Protocol: "http", CreatedAt: time.Now().UTC()}
 	identical := false
 	if existingIndex >= 0 {
@@ -417,6 +420,7 @@ func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (resul
 		return result{}, err
 	}
 	manager := processmanager.Manager{Paths: paths, Client: client}
+	progress.Update("Reloading the tunnel…")
 	restarted, err := manager.RestartBackground(cfg)
 	if err != nil {
 		return result{}, err
@@ -427,6 +431,7 @@ func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (resul
 	data["tunnel_restarted"] = restarted
 	data["changed"] = !identical || dnsCreated
 	data["claimed"] = claimable
+	progress.Stop()
 	summary := fmt.Sprintf("Added https://%s → localhost:%d", hostname, port)
 	if claimable {
 		summary = fmt.Sprintf("Claimed https://%s on this machine → localhost:%d", hostname, port)
@@ -463,14 +468,17 @@ func (app *App) remove(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 		return result{}, err
 	}
 	hostname := subdomain + "." + cfg.Domain
+	progress := view.Progress("Removing " + hostname + "…")
+	defer progress.Stop()
 	managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	dnsRemoved, dnsErr := api.DeleteOwnedDNS(managementContext, hostname, cfg.TunnelID)
 	cancel()
 	if dnsErr != nil && !inv.Options.Force {
 		return result{}, dnsErr
 	}
-	if dnsErr != nil && !inv.Options.JSON {
-		view.Warning("DNS cleanup failed; --force will still remove the local mapping.")
+	warning := ""
+	if dnsErr != nil {
+		warning = "DNS cleanup failed; --force will still remove the local mapping."
 	}
 	removed := false
 	next := make([]config.Mapping, 0, len(cfg.Mappings))
@@ -483,6 +491,7 @@ func (app *App) remove(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 	}
 	cfg.Mappings = next
 	if removed {
+		progress.Update("Updating local routing…")
 		if err := config.Save(paths, cfg); err != nil {
 			return result{}, err
 		}
@@ -490,10 +499,15 @@ func (app *App) remove(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 	manager := processmanager.Manager{Paths: paths, Client: client}
 	restarted := false
 	if removed {
+		progress.Update("Reloading the tunnel…")
 		restarted, err = manager.RestartBackground(cfg)
 		if err != nil {
 			return result{}, err
 		}
+	}
+	progress.Stop()
+	if warning != "" && !inv.Options.JSON {
+		view.Warning(warning)
 	}
 	status := manager.Status()
 	if removed && !inv.Options.JSON && status.Running && status.Mode == "foreground" {
@@ -535,16 +549,24 @@ func (app *App) removeAll(ctx context.Context, inv cli.Invocation, view *ui.UI) 
 
 	removed := make([]string, 0, len(cfg.Mappings))
 	dnsRemoved := 0
-	for _, mapping := range cfg.Mappings {
+	warnings := make([]string, 0)
+	label := "project URLs"
+	if len(cfg.Mappings) == 1 {
+		label = "project URL"
+	}
+	progress := view.Progress(fmt.Sprintf("Removing %d %s…", len(cfg.Mappings), label))
+	defer progress.Stop()
+	for index, mapping := range cfg.Mappings {
 		hostname := mapping.Subdomain + "." + cfg.Domain
+		progress.Update(fmt.Sprintf("Removing %s (%d/%d)…", hostname, index+1, len(cfg.Mappings)))
 		managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 		deleted, deleteErr := api.DeleteOwnedDNS(managementContext, hostname, cfg.TunnelID)
 		cancel()
 		if deleteErr != nil && !inv.Options.Force {
 			return result{}, deleteErr
 		}
-		if deleteErr != nil && !inv.Options.JSON {
-			view.Warning("DNS cleanup failed for " + hostname + "; removing its local mapping because --force was supplied.")
+		if deleteErr != nil {
+			warnings = append(warnings, "DNS cleanup failed for "+hostname+"; removing its local mapping because --force was supplied.")
 		}
 		if deleted {
 			dnsRemoved++
@@ -552,17 +574,25 @@ func (app *App) removeAll(ctx context.Context, inv cli.Invocation, view *ui.UI) 
 		removed = append(removed, hostname)
 	}
 	cfg.Mappings = nil
+	progress.Update("Updating local routing…")
 	if err := config.Save(paths, cfg); err != nil {
 		return result{}, err
 	}
 	manager := processmanager.Manager{Paths: paths, Client: client}
+	progress.Update("Stopping the tunnel…")
 	stopped, err := manager.Stop()
 	if err != nil {
 		return result{}, err
 	}
+	progress.Stop()
+	if !inv.Options.JSON {
+		for _, warning := range warnings {
+			view.Warning(warning)
+		}
+	}
 	return result{Data: map[string]any{
 		"removed": removed, "dns_removed": dnsRemoved, "tunnel_stopped": stopped,
-	}, Summary: fmt.Sprintf("Removed %d project hostname(s) from %s.", len(removed), cfg.Domain)}, nil
+	}, Summary: fmt.Sprintf("Removed %d %s from %s.", len(removed), label, cfg.Domain)}, nil
 }
 
 func (app *App) list(inv cli.Invocation, view *ui.UI, heading bool) (result, error) {
@@ -627,11 +657,11 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 	}
 	manager := processmanager.Manager{Paths: paths, Client: client}
 	if inv.Options.Detach {
+		progress := view.Progress("Starting the tunnel in the background…")
+		defer progress.Stop()
 		transitioned := false
 		if current := manager.Status(); current.Running && current.Mode == "foreground" {
-			if !inv.Options.JSON {
-				view.Info("Moving the tunnel to the background…")
-			}
+			progress.Update("Moving the tunnel to the background…")
 			if _, err := manager.Stop(); err != nil {
 				return result{}, err
 			}
@@ -641,6 +671,7 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 		if err != nil {
 			return result{}, err
 		}
+		progress.Stop()
 		summary := fmt.Sprintf("Tunnel is running in the background (PID %d).", status.PID)
 		if alreadyRunning {
 			summary = fmt.Sprintf("Tunnel is already running (PID %d).", status.PID)
@@ -650,11 +681,11 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 		}
 		return result{Data: map[string]any{"tunnel": status, "already_running": alreadyRunning, "transitioned_from_foreground": transitioned, "domain": cfg.Domain}, Summary: summary}, nil
 	}
-	if !inv.Options.JSON {
-		view.Info("Starting the tunnel…")
-	}
+	progress := view.Progress("Starting the tunnel…")
+	defer progress.Stop()
 	verbose := inv.Options.Verbose && !inv.Options.Quiet && !inv.Options.JSON
 	status, alreadyRunning, err := manager.StartForeground(cfg, app.In, app.Out, app.Err, verbose, func(_ processmanager.Status) {
+		progress.Stop()
 		if !inv.Options.JSON {
 			view.Success("Tunnel is running — press Ctrl+C to stop.")
 		}
@@ -662,13 +693,14 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 	if err != nil {
 		return result{}, err
 	}
+	progress.Stop()
 	if alreadyRunning {
 		return result{Data: map[string]any{"tunnel": status, "already_running": true}, Summary: fmt.Sprintf("Tunnel is already running (PID %d).", status.PID)}, nil
 	}
 	return result{Data: map[string]any{"tunnel": status, "already_running": false}, Summary: "Tunnel stopped."}, nil
 }
 
-func (app *App) down(inv cli.Invocation) (result, error) {
+func (app *App) down(inv cli.Invocation, view *ui.UI) (result, error) {
 	if len(inv.Args) != 0 {
 		return result{}, usage("`cfdev down` accepts no arguments", "Try `cfdev down`.")
 	}
@@ -684,10 +716,13 @@ func (app *App) down(inv cli.Invocation) (result, error) {
 		return result{}, err
 	}
 	manager := processmanager.Manager{Paths: paths, Client: client}
+	progress := view.Progress("Stopping the tunnel…")
+	defer progress.Stop()
 	stopped, err := manager.Stop()
 	if err != nil {
 		return result{}, err
 	}
+	progress.Stop()
 	summary := "Tunnel is already stopped."
 	if stopped {
 		summary = "Tunnel stopped."
@@ -839,6 +874,8 @@ func (app *App) doctor(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 	if len(inv.Args) != 0 {
 		return result{}, usage("`cfdev doctor` accepts no arguments", "Try `cfdev doctor`.")
 	}
+	progress := view.Progress("Running diagnostics…")
+	defer progress.Stop()
 	paths, pathErr := config.ResolvePaths()
 	checks := make([]doctorCheck, 0)
 	if pathErr != nil {
@@ -916,6 +953,7 @@ func (app *App) doctor(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 			healthy = false
 		}
 	}
+	progress.Stop()
 	if !inv.Options.JSON {
 		view.Heading("cfdev doctor")
 		view.Line("")
@@ -1005,15 +1043,15 @@ func (app *App) upgrade(ctx context.Context, inv cli.Invocation, view *ui.UI) (r
 	if len(inv.Args) != 0 {
 		return result{}, usage("`cfdev upgrade` accepts no arguments", "Try `cfdev upgrade`.")
 	}
-	if !inv.Options.JSON {
-		view.Info("Checking for a cfdev update…")
-	}
+	progress := view.Progress("Checking for a cfdev update…")
+	defer progress.Stop()
 	updateContext, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	updateResult, err := updater.Upgrade(updateContext, Version)
 	if err != nil {
 		return result{}, err
 	}
+	progress.Stop()
 	summary := "cfdev " + updateResult.CurrentVersion + " is already current."
 	if updateResult.Updated {
 		summary = "Upgraded cfdev to " + updateResult.LatestVersion + "."

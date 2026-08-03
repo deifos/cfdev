@@ -2,7 +2,7 @@ package app
 
 import "fmt"
 
-var Version = "0.1.0-dev"
+var Version = "0.1.1-dev"
 
 func helpText(command string) string {
 	commandHelp := map[string]string{

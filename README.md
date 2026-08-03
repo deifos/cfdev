@@ -133,6 +133,8 @@ Common flags:
 
 Foreground tunnels show only cfdev's concise status messages by default. Detailed `cloudflared` output is always written to `~/.cfdev/cloudflared.log` and can also be streamed to the terminal with `--verbose` or `-v`.
 
+Slow network and tunnel operations show a compact spinner in interactive terminals. Fast operations finish before the spinner appears, redirected output receives one plain progress line, and `--json` / `--quiet` remain completely animation-free. Set `CFDEV_NO_SPINNER=1` to disable terminal animation or `NO_COLOR=1` to disable color.
+
 Running `cfdev up -d` while cfdev is attached in another terminal safely moves the same tunnel into the background; there is no longer a manual stop-and-restart step.
 
 ## Removing URLs
@@ -259,8 +261,8 @@ go build -trimpath -o dist/cfdev ./cmd/cfdev
 To publish a release after the repository is public and CI is green:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The release workflow tests and cross-builds all six supported targets, creates checksums and build attestations, renders package-manager definitions with exact hashes, and publishes one GitHub Release. `cfdev upgrade` uses that release metadata and refuses to install a binary that does not match its checksum. Package-managed installations direct users back to their package manager instead.
