@@ -82,4 +82,4 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags="-s -w -X github.com/deifos/cfdev/internal/app.Version=0.1.1-dev" -o "dist/${{ matrix.output }}" ./cmd/cfdev
+        run: go build -trimpath -ldflags="-s -w -X github.com/deifos/cfdev/internal/app.Version=0.3.0-dev" -o "dist/${{ matrix.output }}" ./cmd/cfdev

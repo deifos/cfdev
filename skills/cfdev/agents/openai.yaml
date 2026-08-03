@@ -1,4 +1,4 @@
 interface:
   display_name: "cfdev"
-  short_description: "Manage cfdev URLs, domains, and machine state"
-  default_prompt: "Use $cfdev to safely manage my permanent Cloudflare URLs, active domain, and machine setup."
+  short_description: "Manage and inspect permanent cfdev URLs"
+  default_prompt: "Use $cfdev to safely manage my permanent Cloudflare URLs, inspect or replay local HTTP traffic, and maintain this machine's setup."

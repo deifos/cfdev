@@ -12,10 +12,19 @@ cfdev manages local Cloudflare Tunnel state on the machine where it runs:
 - Tunnel credential JSON files under that same directory
 - Local non-secret state under `~/.cfdev/`
 - DNS records on the Cloudflare zone authorized during `cfdev setup`
+- In-memory HTTP request inspection data when the local inspector is running
 
 cfdev never asks you to paste an API token. Do not copy, commit, or transfer origin certificates or tunnel credential files between machines or into git.
 
 `cfdev domain` may move origin certificates within the protected Cloudflare directory so a user can switch back to a previously authorized domain without duplicating the secret. `cfdev reset` preserves origin certificates and deletes a tunnel credential only after Cloudflare confirms deletion of that exact tunnel.
+
+## Local request inspector
+
+The inspector UI and traffic gateway bind only to `127.0.0.1`; they are not LAN listeners. Request history exists only in the inspector process and is never persisted to disk or written to diagnostics. A protected local state file contains a random control token used to change settings or stop the process.
+
+Metadata is always retained while the inspector runs. Exact bodies are disabled by default and apply only to future traffic after the user enables capture. Body data can contain webhook payloads, credentials, or personal data, so use the dashboard's Clear action or run `cfdev reset` after debugging on a shared machine. Storage is bounded to 200 requests, 1 MiB per captured body, and 32 MiB total captured body bytes.
+
+`Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are replaced before records enter history. Replay and copy-as-curl omit those headers; signature headers used by Stripe, GitHub, and similar webhook providers are intentionally preserved. Replays are one-shot requests to the original configured loopback target only. Streaming and upgraded connections are passed through without body capture and cannot be replayed.
 
 ## Release integrity
 
@@ -37,6 +46,7 @@ You should receive an acknowledgment within a few days. We will coordinate a fix
 In scope:
 
 - Credential handling and secret leakage in logs or JSON output
+- Inspector exposure, unsafe replay destinations, redaction bypasses, or persisted request history
 - Unsafe DNS overwrite or delete behavior beyond documented `--force` / claim semantics
 - Installer or `cfdev upgrade` checksum bypass or supply-chain issues in release assets
 - Command injection, path traversal, or privilege escalation in cfdev itself
@@ -54,3 +64,4 @@ Out of scope:
 - Treat `CFDEV_UPDATE_URL`, `CFDEV_RELEASES_URL`, `CFDEV_CLOUDFLARED`, and `CFDEV_API_URL` as trusted-operator overrides
 - Use `cfdev claim` for machine handoff; reserve `--force` for conflicts you have inspected
 - Keep local apps unbound from the public internet except through the tunnel mappings you create
+- Enable body capture only while needed, and clear inspector history after debugging sensitive payloads

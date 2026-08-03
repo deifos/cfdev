@@ -23,6 +23,7 @@ The public URL stays the same every time. Put it in webhook providers, OAuth cal
 - **Native and cross-platform.** One small Go binary for Windows, macOS, and Linux, with no language runtime or package dependencies.
 - **Agent-ready.** Every major command has stable JSON, meaningful exit codes, no surprise prompts, and retry-safe behavior.
 - **Official transport.** cfdev manages Cloudflare's `cloudflared` binary rather than reimplementing the tunnel protocol.
+- **Built-in request inspector.** A loopback-only dashboard shows request metadata and local targets, with opt-in exact body capture, copy-as-curl, and one-shot replay to localhost.
 
 ## Install
 
@@ -113,6 +114,7 @@ cfdev up -d                     Run the tunnel in the background
 cfdev down                      Stop the managed tunnel process
 cfdev status                    Show tunnel and local app health
 cfdev open <name>               Open a permanent URL
+cfdev inspect                   Open the local request inspector
 cfdev config [path|edit]        Show or edit local configuration
 cfdev doctor                    Diagnose setup and routing problems
 cfdev upgrade                   Install the latest verified GitHub Release
@@ -129,6 +131,7 @@ Common flags:
 --all                           Remove every configured mapping
 --yes, -y                       Accept safe setup confirmations
 --detach, -d                    Run cloudflared in the background
+--capture-bodies                Capture exact bodies for future inspected requests
 --help, -h                      Show help
 --version, -V                   Show the version
 ```
@@ -138,6 +141,28 @@ Foreground tunnels show only cfdev's concise status messages by default. Detaile
 Slow network and tunnel operations show a compact spinner in interactive terminals. Fast operations finish before the spinner appears, redirected output receives one plain progress line, and `--json` / `--quiet` remain completely animation-free. Set `CFDEV_NO_SPINNER=1` to disable terminal animation or `NO_COLOR=1` to disable color.
 
 Running `cfdev up -d` while cfdev is attached in another terminal safely moves the same tunnel into the background; there is no longer a manual stop-and-restart step.
+
+## Inspecting and replaying requests
+
+The request inspector starts automatically with the tunnel and listens only on `http://127.0.0.1:4040`. Open it at any time with:
+
+```bash
+cfdev inspect
+```
+
+Request metadata is always captured: method, path, hostname, local target, response status, duration, and headers. The dashboard keeps one live list and detail pane, supports filtering, and clearly distinguishes no traffic, a stopped tunnel, and a local app that is not listening. Mapping changes and `cloudflared` restarts do not clear history because the local gateway remains alive.
+
+Exact request and response bodies are opt-in. Enable them for future traffic from the dashboard or when opening it:
+
+```bash
+cfdev inspect --capture-bodies
+```
+
+The switch is prospective—requests already in history never gain bodies retroactively. Captured bytes are preserved exactly for webhook signature debugging and formatted only for display. Each body is capped at 1 MiB, the inspector keeps at most 200 requests and 32 MiB of body data, and it evicts the oldest entries first. Truncated bodies remain inspectable but cannot be replayed.
+
+“Replay to localhost” makes one request to the exact local target captured with the original exchange and adds a marked replay entry to the list. It never contacts the original webhook provider. Copy-as-curl also rewrites the URL and Host to the local target. `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are redacted and omitted from replay/curl; webhook signature headers remain available. WebSocket upgrades and streaming responses pass through transparently, with metadata only and replay disabled.
+
+If port `127.0.0.1:4040` or the gateway port is occupied, `cfdev inspect` reports the exact conflict. Normal `cfdev up` falls back to direct `cloudflared → localhost` routing with a warning so the tunnel remains usable without inspection.
 
 ## Removing URLs
 
@@ -177,6 +202,7 @@ cfdev up -d --json
 cfdev status --json
 cfdev list --json
 cfdev claim qtable 3000 --json
+cfdev inspect --json
 ```
 
 If an agent runs `cfdev setup --json` before browser authentication exists, cfdev exits immediately with code `2`:
@@ -247,6 +273,8 @@ cfdev owns local state under `~/.cfdev`:
 ├── machine-id
 ├── process.json
 ├── cloudflared.log        tunnel diagnostics
+├── inspector.json         protected local control state
+├── inspector.log          inspector startup diagnostics
 └── bin/cloudflared       optional managed copy
 ```
 
@@ -259,7 +287,7 @@ Cloudflare authentication remains in its normal location:
 └── <tunnel-id>.json
 ```
 
-cfdev never prints or copies the account token contained in an origin certificate. Domain switching uses same-directory atomic moves, and reset preserves origin certificates. Local state stores only non-secret identifiers and the credential file's path. Files are written with user-only permissions on operating systems that support them.
+cfdev never prints or copies the account token contained in an origin certificate. Domain switching uses same-directory atomic moves, and reset preserves origin certificates. Inspector traffic history is memory-only and disappears when its local process stops; it is never written to the inspector log. The inspector control state contains a random shutdown/settings token and is written with user-only permissions, as are other cfdev state files on operating systems that support them.
 
 DNS removal is deliberately narrow: cfdev deletes a record only when both the hostname and its `<tunnel-id>.cfargotunnel.com` target match. Accepting a full hostname does not broaden that ownership check. Automatic `claim` is similarly narrow: it replaces another tunnel CNAME but never an unrelated DNS record.
 

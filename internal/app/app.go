@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/deifos/cfdev/internal/cloudflared"
 	"github.com/deifos/cfdev/internal/config"
 	"github.com/deifos/cfdev/internal/failure"
+	"github.com/deifos/cfdev/internal/inspector"
 	processmanager "github.com/deifos/cfdev/internal/process"
 	"github.com/deifos/cfdev/internal/ui"
 	"github.com/deifos/cfdev/internal/updater"
@@ -138,6 +140,8 @@ func (app *App) execute(ctx context.Context, inv cli.Invocation, view *ui.UI) (r
 		return app.status(inv, view)
 	case "open":
 		return app.open(inv)
+	case "inspect":
+		return app.inspect(inv, view)
 	case "config":
 		return app.configCommand(inv, view)
 	case "doctor":
@@ -558,6 +562,13 @@ func (app *App) domain(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 	restarted := false
 	if previousStatus.Running && previousStatus.Mode == "background" {
 		progress.Update("Restarting the tunnel…")
+		routing, routingErr := prepareInspectorRouting(paths, cfg, false)
+		if routingErr != nil {
+			return result{}, routingErr
+		}
+		if routing.Warning != nil && !inv.Options.JSON {
+			view.Warning("Request inspection is unavailable; using direct local routing. " + routing.Warning.Error())
+		}
 		_, _, err = manager.StartBackground(cfg)
 		if err != nil {
 			restartErr := failure.Wrap("DOMAIN_SWITCHED_TUNNEL_STOPPED", "the domain switch succeeded, but the tunnel could not restart", failure.ExitGeneral, err)
@@ -714,6 +725,7 @@ func (app *App) reset(ctx context.Context, inv cli.Invocation, view *ui.UI) (res
 			client = discovered
 		}
 		_, _ = (processmanager.Manager{Paths: paths, Client: client}).Stop()
+		_, _ = inspector.Stop(paths)
 		if err := removeMachineState(paths); err != nil {
 			return result{}, err
 		}
@@ -874,6 +886,14 @@ func (app *App) reset(ctx context.Context, inv cli.Invocation, view *ui.UI) (res
 		}
 	}
 	progress.Update("Removing local cfdev state…")
+	if inspectorStopped, inspectorStopErr := inspector.Stop(paths); inspectorStopErr != nil {
+		if !inv.Options.Force {
+			return result{}, inspectorStopErr
+		}
+		warnings = append(warnings, "The local inspector could not be stopped: "+inspectorStopErr.Error())
+	} else if inspectorStopped {
+		progress.Update("Stopped the local inspector…")
+	}
 	if err := removeMachineState(paths); err != nil {
 		return result{}, err
 	}
@@ -892,7 +912,7 @@ func (app *App) reset(ctx context.Context, inv cli.Invocation, view *ui.UI) (res
 }
 
 func removeMachineState(paths config.Paths) error {
-	for _, path := range []string{paths.Config, paths.Ingress, paths.Process, paths.ConnectorPID, paths.Log, paths.MachineID} {
+	for _, path := range []string{paths.Config, paths.Ingress, paths.Process, paths.ConnectorPID, paths.Log, paths.Inspector, paths.InspectorLog, paths.MachineID} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return failure.Wrap("RESET_FAILED", "could not remove local cfdev state", failure.ExitConfig, err)
 		}
@@ -994,6 +1014,15 @@ func (app *App) add(ctx context.Context, inv cli.Invocation, view *ui.UI) (resul
 	}
 	manager := processmanager.Manager{Paths: paths, Client: client}
 	progress.Update("Reloading the tunnel…")
+	if current := manager.Status(); current.Running && current.Mode == "background" {
+		routing, routingErr := prepareInspectorRouting(paths, cfg, false)
+		if routingErr != nil {
+			return result{}, routingErr
+		}
+		if routing.Warning != nil && !inv.Options.JSON {
+			view.Warning("Request inspection is unavailable; using direct local routing. " + routing.Warning.Error())
+		}
+	}
 	restarted, err := manager.RestartBackground(cfg)
 	if err != nil {
 		return result{}, err
@@ -1073,6 +1102,15 @@ func (app *App) remove(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 	restarted := false
 	if removed {
 		progress.Update("Reloading the tunnel…")
+		if current := manager.Status(); current.Running && current.Mode == "background" {
+			routing, routingErr := prepareInspectorRouting(paths, cfg, false)
+			if routingErr != nil {
+				return result{}, routingErr
+			}
+			if routing.Warning != nil && !inv.Options.JSON {
+				view.Warning("Request inspection is unavailable; using direct local routing. " + routing.Warning.Error())
+			}
+		}
 		restarted, err = manager.RestartBackground(cfg)
 		if err != nil {
 			return result{}, err
@@ -1187,7 +1225,7 @@ func (app *App) list(inv cli.Invocation, view *ui.UI, heading bool) (result, err
 	manager := processmanager.Manager{Paths: paths, Client: client}
 	status := manager.Status()
 	mappings := buildMappingViews(cfg)
-	data := map[string]any{"domain": cfg.Domain, "tunnel": status, "mappings": mappings}
+	data := map[string]any{"domain": cfg.Domain, "tunnel": status, "inspector": inspector.InspectStatus(paths), "mappings": mappings}
 	if inv.Options.JSON {
 		return result{Data: data, Summary: fmt.Sprintf("%d mapping(s)", len(mappings))}, nil
 	}
@@ -1216,8 +1254,15 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 	if err != nil {
 		return result{}, err
 	}
-	if err := config.WriteIngress(paths, cfg); err != nil {
+	wasInspectorRoute := ingressUsesInspector(paths)
+	routing, err := prepareInspectorRouting(paths, cfg, inv.Options.CaptureBodies)
+	if err != nil {
 		return result{}, err
+	}
+	inspectorStatus, inspectorErr := routing.Status, routing.Warning
+	routingChanged := wasInspectorRoute != routing.Enabled
+	if inspectorErr != nil && !inv.Options.JSON {
+		view.Warning("Request inspection is unavailable; using direct local routing. " + inspectorErr.Error())
 	}
 	managementContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	err = client.ValidateIngress(managementContext, paths.Ingress)
@@ -1229,6 +1274,18 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 		return result{}, usage("`cfdev up --json` requires --detach", "Use `cfdev up -d --json` so the command can return structured output.")
 	}
 	manager := processmanager.Manager{Paths: paths, Client: client}
+	if current := manager.Status(); routingChanged && current.Running {
+		if current.Mode == "background" {
+			if _, restartErr := manager.RestartBackground(cfg); restartErr != nil {
+				return result{}, restartErr
+			}
+		} else if current.Mode == "foreground" && !inv.Options.Detach {
+			restartRequired := failure.New("TUNNEL_RESTART_REQUIRED", "the tunnel is still using the previous local routing mode", failure.ExitConflict)
+			restartRequired.Hint = "Run `cfdev up -d` to move it to the background and load the new routing safely, or stop the foreground tunnel and run `cfdev up` again."
+			restartRequired.Data = map[string]any{"inspector": inspectorStatus, "inspection_fallback": inspectorErr != nil, "retry_command": "cfdev up -d"}
+			return result{}, restartRequired
+		}
+	}
 	if inv.Options.Detach {
 		progress := view.Progress("Starting the tunnel in the background…")
 		defer progress.Stop()
@@ -1252,7 +1309,7 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 		if transitioned {
 			summary = fmt.Sprintf("Tunnel moved to the background (PID %d).", status.PID)
 		}
-		return result{Data: map[string]any{"tunnel": status, "already_running": alreadyRunning, "transitioned_from_foreground": transitioned, "domain": cfg.Domain}, Summary: summary}, nil
+		return result{Data: map[string]any{"tunnel": status, "inspector": inspectorStatus, "inspection_fallback": inspectorErr != nil, "already_running": alreadyRunning, "transitioned_from_foreground": transitioned, "domain": cfg.Domain}, Summary: summary}, nil
 	}
 	progress := view.Progress("Starting the tunnel…")
 	defer progress.Stop()
@@ -1268,9 +1325,9 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 	}
 	progress.Stop()
 	if alreadyRunning {
-		return result{Data: map[string]any{"tunnel": status, "already_running": true}, Summary: fmt.Sprintf("Tunnel is already running (PID %d).", status.PID)}, nil
+		return result{Data: map[string]any{"tunnel": status, "inspector": inspectorStatus, "inspection_fallback": inspectorErr != nil, "already_running": true}, Summary: fmt.Sprintf("Tunnel is already running (PID %d).", status.PID)}, nil
 	}
-	return result{Data: map[string]any{"tunnel": status, "already_running": false}, Summary: "Tunnel stopped."}, nil
+	return result{Data: map[string]any{"tunnel": status, "inspector": inspectorStatus, "inspection_fallback": inspectorErr != nil, "already_running": false}, Summary: "Tunnel stopped."}, nil
 }
 
 func (app *App) down(inv cli.Invocation, view *ui.UI) (result, error) {
@@ -1321,7 +1378,8 @@ func (app *App) status(inv cli.Invocation, view *ui.UI) (result, error) {
 	}
 	tunnel := (processmanager.Manager{Paths: paths, Client: client}).Status()
 	mappings := buildMappingViews(cfg)
-	data := map[string]any{"domain": cfg.Domain, "tunnel": tunnel, "mappings": mappings}
+	inspectorStatus := inspector.InspectStatus(paths)
+	data := map[string]any{"domain": cfg.Domain, "tunnel": tunnel, "inspector": inspectorStatus, "mappings": mappings}
 	summary := "Tunnel is stopped."
 	if tunnel.Running {
 		summary = "Tunnel is running."
@@ -1341,6 +1399,11 @@ func (app *App) status(inv cli.Invocation, view *ui.UI) (result, error) {
 	}
 	view.Line("  Tunnel  " + state + pid)
 	view.Line("  Domain  " + cfg.Domain)
+	inspectionState := view.Dim("○ Unavailable")
+	if inspectorStatus.Running {
+		inspectionState = view.Green("● " + inspector.UIURL)
+	}
+	view.Line("  Inspect " + inspectionState)
 	listening := 0
 	for _, mapping := range mappings {
 		if mapping.LocalReachable {
@@ -1386,6 +1449,50 @@ func (app *App) open(inv cli.Invocation) (result, error) {
 	return result{Data: map[string]any{"subdomain": subdomain, "url": publicURL}, Summary: "Opened " + publicURL + "."}, nil
 }
 
+func (app *App) inspect(inv cli.Invocation, view *ui.UI) (result, error) {
+	if len(inv.Args) != 0 {
+		return result{}, usage("`cfdev inspect` accepts no arguments", "Try `cfdev inspect --capture-bodies`.")
+	}
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return result{}, err
+	}
+	cfg, err := config.Load(paths)
+	if err != nil {
+		return result{}, err
+	}
+	wasInspectorRoute := ingressUsesInspector(paths)
+	status, _, err := inspector.Ensure(paths, inv.Options.CaptureBodies, Version)
+	if err != nil {
+		return result{}, err
+	}
+	if err := config.WriteInspectorIngress(paths, cfg); err != nil {
+		return result{}, err
+	}
+	if client, findErr := cloudflared.Find(paths); findErr == nil {
+		manager := processmanager.Manager{Paths: paths, Client: client}
+		current := manager.Status()
+		if current.Running && current.Mode == "background" && !wasInspectorRoute {
+			if _, restartErr := manager.RestartBackground(cfg); restartErr != nil {
+				return result{}, restartErr
+			}
+		} else if current.Running && current.Mode == "foreground" && !inv.Options.JSON {
+			view.Warning("Restart the foreground tunnel once so traffic passes through the inspector.")
+		}
+		if inv.Options.JSON {
+			statusData := map[string]any{"inspector": status, "capture_bodies": status.CaptureBodies, "tunnel_restart_required": current.Running && current.Mode == "foreground" && !wasInspectorRoute}
+			return result{Data: statusData, Summary: "Inspector is running at " + inspector.UIURL + "."}, nil
+		}
+	}
+	if inv.Options.JSON {
+		return result{Data: map[string]any{"inspector": status, "capture_bodies": status.CaptureBodies, "tunnel_restart_required": false}, Summary: "Inspector is running at " + inspector.UIURL + "."}, nil
+	}
+	if err := launchBrowser(inspector.UIURL); err != nil {
+		return result{}, failure.Wrap("BROWSER_OPEN_FAILED", "could not open the request inspector", failure.ExitGeneral, err)
+	}
+	return result{Data: map[string]any{"inspector": status}, Summary: "Opened the request inspector at " + inspector.UIURL + "."}, nil
+}
+
 func (app *App) configCommand(inv cli.Invocation, view *ui.UI) (result, error) {
 	if len(inv.Args) > 1 {
 		return result{}, usage("`cfdev config` accepts `path` or `edit`", "Try `cfdev config path`.")
@@ -1400,7 +1507,7 @@ func (app *App) configCommand(inv cli.Invocation, view *ui.UI) (result, error) {
 	}
 	switch action {
 	case "path":
-		return result{Data: map[string]any{"config": paths.Config, "ingress": paths.Ingress, "log": paths.Log}, Summary: paths.Config}, nil
+		return result{Data: map[string]any{"config": paths.Config, "ingress": paths.Ingress, "log": paths.Log, "inspector_log": paths.InspectorLog}, Summary: paths.Config}, nil
 	case "show":
 		cfg, err := config.Load(paths)
 		if err != nil {
@@ -1487,7 +1594,12 @@ func (app *App) doctor(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 	if cfgErr == nil {
 		credentialOK := fileExists(cfg.CredentialsFile)
 		checks = append(checks, doctorCheck{Name: "tunnel_credentials", OK: credentialOK, Detail: cfg.CredentialsFile, Level: level(credentialOK)})
-		if err := config.WriteIngress(paths, cfg); err != nil {
+		inspectorStatus := inspector.InspectStatus(paths)
+		writeIngress := config.WriteIngress
+		if inspectorStatus.Running {
+			writeIngress = config.WriteInspectorIngress
+		}
+		if err := writeIngress(paths, cfg); err != nil {
 			checks = append(checks, doctorCheck{Name: "ingress", OK: false, Detail: err.Error(), Level: "error"})
 		} else if client != nil {
 			validationContext, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -1503,6 +1615,14 @@ func (app *App) doctor(ctx context.Context, inv cli.Invocation, view *ui.UI) (re
 			}
 			checks = append(checks, doctorCheck{Name: "process", OK: true, Detail: detail, Level: "info"})
 		}
+		inspectorDetail := "stopped; it starts automatically with `cfdev up`"
+		if inspectorStatus.Running {
+			inspectorDetail = inspector.UIURL
+			if inspectorStatus.CaptureBodies {
+				inspectorDetail += " (body capture enabled)"
+			}
+		}
+		checks = append(checks, doctorCheck{Name: "inspector", OK: true, Detail: inspectorDetail, Level: "info"})
 		if certErr == nil {
 			api := cloudflare.NewAPI(cert)
 			dnsOK := true
@@ -1654,6 +1774,38 @@ func (app *App) ready() (config.Paths, *config.Config, *cloudflared.Client, *clo
 		return paths, nil, nil, nil, "", err
 	}
 	return paths, cfg, client, cloudflare.NewAPI(cert), certPath, nil
+}
+
+type inspectorRouting struct {
+	Status  inspector.Status
+	Enabled bool
+	Warning error
+}
+
+func prepareInspectorRouting(paths config.Paths, cfg *config.Config, captureBodies bool) (inspectorRouting, error) {
+	status, _, inspectorErr := inspector.Ensure(paths, captureBodies, Version)
+	result := inspectorRouting{Status: status}
+	if inspectorErr != nil || !status.Running {
+		if err := config.WriteIngress(paths, cfg); err != nil {
+			return result, err
+		}
+		result.Warning = inspectorErr
+		return result, nil
+	}
+	if err := config.WriteInspectorIngress(paths, cfg); err != nil {
+		if fallbackErr := config.WriteIngress(paths, cfg); fallbackErr != nil {
+			return result, fallbackErr
+		}
+		result.Warning = err
+		return result, nil
+	}
+	result.Enabled = true
+	return result, nil
+}
+
+func ingressUsesInspector(paths config.Paths) bool {
+	contents, err := os.ReadFile(paths.Ingress)
+	return err == nil && bytes.Contains(contents, []byte("http://127.0.0.1:4041"))
 }
 
 func (app *App) renderMappings(view *ui.UI, cfg *config.Config, tunnel processmanager.Status, mappings []mappingView, heading bool) {

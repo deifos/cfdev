@@ -40,6 +40,8 @@ cfdev gives local projects permanent URLs on a user's Cloudflare domain with one
 - Protect certificate changes, config changes, and multi-step remote cleanup with rollback where possible. If rollback is incomplete, report exactly what changed and how to recover.
 - Installer and upgrade checksum verification must fail closed. Treat update-source environment overrides as trusted-operator inputs.
 - Do not weaken signing, notarization, provenance, checksum, or pinned-action protections in release workflows.
+- Keep the request inspector and gateway loopback-only and history memory-only. Never persist captured traffic, widen replay beyond the original configured localhost target, or retain redacted authorization/cookie values.
+- Preserve transparent transport for streaming and upgraded connections. Disable body capture and replay when exact bytes cannot be retained without changing application behavior.
 
 ## Tests are required
 
@@ -53,6 +55,7 @@ Include the relevant cases:
 - exact DNS ownership and `claim` / `--force` conflict matrices;
 - missing, expired, mismatched, and previously saved authorization states;
 - foreground and background process transitions;
+- transparent HTTP, streaming, and WebSocket proxying; exact-byte body capture, truncation, redaction, local-only replay, bounded eviction, and inspector process survival across mapping/tunnel reloads;
 - Windows-specific path/process behavior and Unix permission assertions;
 - bad checksums and update-source overrides for installer or upgrade changes.
 

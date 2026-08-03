@@ -25,6 +25,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	_ = os.Setenv("CFDEV_TEST_DISABLE_INSPECTOR", "1")
 	if os.Getenv("CFDEV_TEST_START_BACKGROUND_FIXTURE") == "1" {
 		if err := os.Setenv("CFDEV_TEST_START_BACKGROUND_FIXTURE", ""); err != nil {
 			os.Exit(2)

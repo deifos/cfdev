@@ -52,6 +52,8 @@ type Paths struct {
 	Process      string
 	ConnectorPID string
 	Log          string
+	Inspector    string
+	InspectorLog string
 	ManagedBin   string
 	MachineID    string
 }
@@ -80,6 +82,8 @@ func ResolvePaths() (Paths, error) {
 		Process:      filepath.Join(absHome, "process.json"),
 		ConnectorPID: filepath.Join(absHome, "cloudflared.pid"),
 		Log:          filepath.Join(absHome, "cloudflared.log"),
+		Inspector:    filepath.Join(absHome, "inspector.json"),
+		InspectorLog: filepath.Join(absHome, "inspector.log"),
 		ManagedBin:   filepath.Join(absHome, "bin", binName),
 		MachineID:    filepath.Join(absHome, "machine-id"),
 	}, nil
@@ -161,7 +165,17 @@ func restoreConfig(path string, previous []byte, existed bool) error {
 }
 
 func WriteIngress(paths Paths, cfg *Config) error {
-	contents := BuildIngress(cfg)
+	return WriteIngressMode(paths, cfg, false)
+}
+
+// WriteInspectorIngress routes public traffic through cfdev's loopback-only
+// inspection gateway. WriteIngress keeps the direct route as the safe fallback.
+func WriteInspectorIngress(paths Paths, cfg *Config) error {
+	return WriteIngressMode(paths, cfg, true)
+}
+
+func WriteIngressMode(paths Paths, cfg *Config, inspector bool) error {
+	contents := BuildIngressMode(cfg, inspector)
 	if err := atomicWrite(paths.Ingress, []byte(contents), 0o600); err != nil {
 		return failure.Wrap("INGRESS_WRITE_FAILED", "could not generate the cloudflared ingress file", failure.ExitConfig, err)
 	}
@@ -169,6 +183,10 @@ func WriteIngress(paths Paths, cfg *Config) error {
 }
 
 func BuildIngress(cfg *Config) string {
+	return BuildIngressMode(cfg, false)
+}
+
+func BuildIngressMode(cfg *Config, inspector bool) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "tunnel: %s\n", strconv.Quote(cfg.TunnelID))
 	fmt.Fprintf(&builder, "credentials-file: %s\n\n", strconv.Quote(filepath.ToSlash(cfg.CredentialsFile)))
@@ -177,7 +195,11 @@ func BuildIngress(cfg *Config) string {
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Subdomain < ordered[j].Subdomain })
 	for _, mapping := range ordered {
 		fmt.Fprintf(&builder, "  - hostname: %s\n", strconv.Quote(mapping.Subdomain+"."+cfg.Domain))
-		fmt.Fprintf(&builder, "    service: %s\n", strconv.Quote(fmt.Sprintf("%s://localhost:%d", mapping.Protocol, mapping.Port)))
+		service := fmt.Sprintf("%s://localhost:%d", mapping.Protocol, mapping.Port)
+		if inspector {
+			service = "http://127.0.0.1:4041"
+		}
+		fmt.Fprintf(&builder, "    service: %s\n", strconv.Quote(service))
 	}
 	builder.WriteString("  - service: http_status:404\n")
 	return builder.String()

@@ -3,14 +3,14 @@ package cli
 import "testing"
 
 func TestParseGlobalFlagsAnywhere(t *testing.T) {
-	invocation, err := Parse([]string{"add", "demo", "3000", "--json", "--force", "--verbose", "--all"})
+	invocation, err := Parse([]string{"add", "demo", "3000", "--json", "--force", "--verbose", "--all", "--capture-bodies"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if invocation.Command != "add" || len(invocation.Args) != 2 {
 		t.Fatalf("unexpected invocation: %#v", invocation)
 	}
-	if !invocation.Options.JSON || !invocation.Options.Force || !invocation.Options.Verbose || !invocation.Options.All {
+	if !invocation.Options.JSON || !invocation.Options.Force || !invocation.Options.Verbose || !invocation.Options.All || !invocation.Options.CaptureBodies {
 		t.Fatalf("options were not parsed: %#v", invocation.Options)
 	}
 }

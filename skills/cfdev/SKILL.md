@@ -1,6 +1,6 @@
 ---
 name: cfdev
-description: Operate cfdev to give local apps permanent URLs on a Cloudflare domain. Use when Codex needs to install, initialize or set up, reset, or upgrade cfdev; authenticate, validate, show, or switch the active domain; expose localhost ports; add, claim, list, clear, or remove permanent project subdomains; move a URL between machines; manage the shared tunnel; automate cfdev with JSON; or diagnose authentication, DNS, routing, configuration, and local port-health problems.
+description: Operate cfdev to give local apps permanent URLs on a Cloudflare domain. Use when Codex needs to install, initialize or set up, reset, or upgrade cfdev; authenticate, validate, show, or switch the active domain; expose localhost ports; inspect or replay webhook and OAuth traffic; add, claim, list, clear, or remove permanent project subdomains; move a URL between machines; manage the shared tunnel; automate cfdev with JSON; or diagnose authentication, DNS, routing, configuration, and local port-health problems.
 ---
 
 # Use cfdev
@@ -80,6 +80,20 @@ cfdev safely transitions the exact managed foreground connector into the backgro
 
 Use `cfdev down` to stop only cfdev's connector. Default output is concise; use `--verbose` only for raw `cloudflared` diagnostics, which are also stored in `~/.cfdev/cloudflared.log`.
 
+## Inspect and replay HTTP traffic
+
+The loopback-only inspector starts with normal tunnel operation. Open it with:
+
+```text
+cfdev inspect
+```
+
+Metadata is always captured. To inspect exact payloads for future requests, use `cfdev inspect --capture-bodies` or enable the dashboard toggle. Do not imply that prior requests gain bodies retroactively. Body capture is memory-only and bounded; it may contain sensitive application data even though authorization and cookie headers are redacted.
+
+Use “Replay to localhost” only when the user intends to repeat a captured side effect. Replay targets the exact original configured localhost service, never the external provider, and appears as a marked new history entry. Truncated, uncaptured-body, streaming, and WebSocket requests cannot be replayed. Copy-as-curl likewise targets localhost and omits redacted credentials.
+
+For automation, `cfdev inspect --json` starts the local inspector and returns its state without opening a browser. If `INSPECTOR_PORT_UNAVAILABLE` is returned, identify the process occupying `127.0.0.1:4040` or `:4041`; do not kill it without the user's authorization. `cfdev up` deliberately falls back to direct local routing when inspection is unavailable.
+
 ## Remove hostnames
 
 Remove one mapping:
@@ -114,10 +128,11 @@ cfdev selects the current platform release and verifies its SHA-256 checksum bef
 For an unreachable hostname:
 
 1. Run `cfdev list` and confirm hostname, port, and local reachability.
-2. Confirm the app responds on `localhost:<port>`.
-3. Run `cfdev up -d` if a changed mapping was loaded by an old foreground connector.
-4. Run `cfdev doctor`.
-5. Inspect `~/.cfdev/cloudflared.log` or reproduce with `cfdev up --verbose`.
+2. Open `cfdev inspect` and distinguish tunnel-down from local-app-down state.
+3. Confirm the app responds on `localhost:<port>`.
+4. Run `cfdev up -d` if a changed mapping was loaded by an old foreground connector.
+5. Run `cfdev doctor`.
+6. Inspect `~/.cfdev/cloudflared.log` and `~/.cfdev/inspector.log`, or reproduce with `cfdev up --verbose`.
 
 A Cloudflare 404 immediately after a mapping change usually means an older foreground connector still has the prior ingress configuration.
 
