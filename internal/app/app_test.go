@@ -35,6 +35,9 @@ func TestMain(m *testing.M) {
 		if err := os.Setenv("CFDEV_TEST_CLOUDFLARED_HOLD_RUN", "1"); err != nil {
 			os.Exit(2)
 		}
+		if err := os.Setenv("CFDEV_TEST_CLOUDFLARED_FILL_LOG", "1"); err != nil {
+			os.Exit(2)
+		}
 		paths, err := config.ResolvePaths()
 		if err != nil {
 			os.Exit(2)
@@ -90,6 +93,9 @@ func TestMain(m *testing.M) {
 		if failedArgument := os.Getenv("CFDEV_TEST_CLOUDFLARED_FAIL_ARG"); failedArgument != "" && containsArgument(os.Args[1:], failedArgument) {
 			_, _ = os.Stderr.WriteString("forced cloudflared failure\n")
 			os.Exit(1)
+		}
+		if isRun && os.Getenv("CFDEV_TEST_CLOUDFLARED_FILL_LOG") == "1" {
+			_, _ = os.Stdout.WriteString(strings.Repeat("x", (2<<20)+1))
 		}
 		if isRun && os.Getenv("CFDEV_TEST_CLOUDFLARED_HOLD_RUN") == "1" {
 			for {
@@ -206,7 +212,7 @@ func TestSetupExplicitDomainRequiresMatchingBrowserAuthorization(t *testing.T) {
 func TestSetupRollsBackAuthorizationWhenTunnelPreparationFails(t *testing.T) {
 	userHome := t.TempDir()
 	cfdevHome := filepath.Join(userHome, "cfdev")
-	t.Setenv("HOME", userHome)
+	setTestUserHome(t, userHome)
 	t.Setenv("CFDEV_HOME", cfdevHome)
 	executable, err := os.Executable()
 	if err != nil {
@@ -331,7 +337,7 @@ func TestSetupJSONDomainDiscoveryContractAndExplicitFallback(t *testing.T) {
 
 func TestAuthorizeDomainFastPathUsesSavedAccountID(t *testing.T) {
 	userHome := t.TempDir()
-	t.Setenv("HOME", userHome)
+	setTestUserHome(t, userHome)
 	t.Setenv("CFDEV_ORIGIN_CERT", "")
 	t.Setenv("TUNNEL_ORIGIN_CERT", "")
 	cloudflaredHome := filepath.Join(userHome, ".cloudflared")
@@ -490,7 +496,7 @@ func TestDomainSwitchValidatesZoneAndReusesMachineTunnel(t *testing.T) {
 func TestDomainSwitchRotatesUserAuthorizationAndCanSwitchBack(t *testing.T) {
 	userHome := t.TempDir()
 	cfdevHome := filepath.Join(userHome, "cfdev")
-	t.Setenv("HOME", userHome)
+	setTestUserHome(t, userHome)
 	t.Setenv("CFDEV_HOME", cfdevHome)
 	executable, err := os.Executable()
 	if err != nil {
@@ -629,10 +635,12 @@ func TestDomainRestartFailureReportsPersistedSwitch(t *testing.T) {
 	}
 	defer func() { _, _ = manager.Stop() }()
 	t.Setenv("CFDEV_TEST_CLOUDFLARED_HOLD_RUN", "")
-	if err := os.Remove(paths.Log); err != nil {
+	t.Setenv("CFDEV_TEST_CLOUDFLARED_FILL_LOG", "")
+	rotatedLog := paths.Log + ".1"
+	if err := os.Mkdir(rotatedLog, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(paths.Log, 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(rotatedLog, "keep"), []byte("keep\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -860,6 +868,12 @@ func TestResetRestoresDeletedDNSWhenLaterCleanupFails(t *testing.T) {
 func writeTestOriginCert(t *testing.T, path string) {
 	t.Helper()
 	writeOriginCert(t, path, "zone-test", "account-test")
+}
+
+func setTestUserHome(t *testing.T, path string) {
+	t.Helper()
+	t.Setenv("HOME", path)
+	t.Setenv("USERPROFILE", path)
 }
 
 func writeOriginCert(t *testing.T, path, zoneID, accountID string) {
