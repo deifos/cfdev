@@ -3,6 +3,7 @@ package inspector
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -154,6 +155,74 @@ func TestProxyAlwaysCapturesMetadataAndRedactsSecrets(t *testing.T) {
 	}
 	if exchange.replayHeaders.Get("Authorization") != "" || exchange.replayHeaders.Get("Cookie") != "" {
 		t.Fatal("replay headers retained sensitive values")
+	}
+}
+
+func TestRequestEventStreamPublishesOnlyFutureMetadata(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+	server := configuredServer(t, backend.URL)
+
+	oldRequest := httptest.NewRequest(http.MethodGet, "http://gateway/old?token=secret", nil)
+	oldRequest.Host = "hooks.example.com"
+	server.serveProxy(httptest.NewRecorder(), oldRequest)
+
+	uiServer := httptest.NewServer(server.uiHandler())
+	defer uiServer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := subscribeRequests(ctx, uiServer.URL+requestEventsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	request := httptest.NewRequest(http.MethodPost, "http://gateway/hooks/stripe?token=do-not-print", strings.NewReader("private body"))
+	request.Host = "hooks.example.com"
+	request.Header.Set("Authorization", "Bearer private-header")
+	server.serveProxy(httptest.NewRecorder(), request)
+
+	events := make(chan RequestEvent, 1)
+	errors := make(chan error, 1)
+	go func() {
+		event, nextErr := stream.Next()
+		if nextErr != nil {
+			errors <- nextErr
+			return
+		}
+		events <- event
+	}()
+	select {
+	case err := <-errors:
+		t.Fatal(err)
+	case event := <-events:
+		if event.ID != 2 || event.Method != http.MethodPost || event.Path != "/hooks/stripe" || event.Status != http.StatusNoContent {
+			t.Fatalf("unexpected request event: %#v", event)
+		}
+		encoded, _ := json.Marshal(event)
+		if bytes.Contains(encoded, []byte("do-not-print")) || bytes.Contains(encoded, []byte("private-header")) || bytes.Contains(encoded, []byte("private body")) {
+			t.Fatalf("request event exposed captured details: %s", encoded)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request event")
+	}
+}
+
+func TestInspectorDashboardIncludesPolishedDebuggingControls(t *testing.T) {
+	page := string(indexHTML)
+	for _, expected := range []string{
+		`id="noise"`, "Hide framework noise", "frameworkNoisePrefixes", `id="serviceNotice"`,
+		"Response status", "Response headers", "Response body", "Replay to localhost", `class="replay-tag"`,
+		"No traffic yet", "Tunnel is down", "Local app is not listening", "not accepting connections",
+	} {
+		if !strings.Contains(page, expected) {
+			t.Fatalf("inspector dashboard is missing %q", expected)
+		}
+	}
+	if !strings.Contains(page, "status>=400?'error':status>=300?'redirect':status>=200?'success'") {
+		t.Fatal("inspector dashboard status color language is not explicit")
 	}
 }
 

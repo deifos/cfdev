@@ -22,6 +22,8 @@ cfdev never asks you to paste an API token. Do not copy, commit, or transfer ori
 
 The inspector UI and traffic gateway bind only to `127.0.0.1`; they are not LAN listeners. Request history exists only in the inspector process and is never persisted to disk or written to diagnostics. A protected local state file contains a random control token used to change settings or stop the process.
 
+Foreground `cfdev up` receives future completed-request events over that loopback-only inspector connection and writes a compact feed to its attached terminal. The feed contains only sanitized method, path without query parameters, status, duration, and configured localhost target; it never contains headers or bodies and cfdev does not copy it into diagnostic logs. As with any terminal output, an operator who redirects or records the terminal is responsible for that external copy.
+
 Metadata is always retained while the inspector runs. Exact bodies are disabled by default and apply only to future traffic after the user enables capture. Body data can contain webhook payloads, credentials, or personal data, so use the dashboard's Clear action or run `cfdev reset` after debugging on a shared machine. Storage is bounded to 200 requests, 1 MiB per captured body, and 32 MiB total captured body bytes.
 
 `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are replaced before records enter history. Replay and copy-as-curl omit those headers; signature headers used by Stripe, GitHub, and similar webhook providers are intentionally preserved. Replays are one-shot requests to the original configured loopback target only. Streaming and upgraded connections are passed through without body capture and cannot be replayed.

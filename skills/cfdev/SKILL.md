@@ -78,7 +78,7 @@ cfdev up -d
 
 cfdev safely transitions the exact managed foreground connector into the background. This does not stop local apps.
 
-Use `cfdev down` to stop only cfdev's connector. Default output is concise; use `--verbose` only for raw `cloudflared` diagnostics, which are also stored in `~/.cfdev/cloudflared.log`.
+Use `cfdev down` to stop only cfdev's connector. Foreground `cfdev up` prints a compact line for each completed request; query parameters, headers, and bodies remain in the browser inspector. Background mode has no attached feed. Use `--verbose` only for raw `cloudflared` diagnostics, which are also stored in `~/.cfdev/cloudflared.log`.
 
 ## Inspect and replay HTTP traffic
 
@@ -88,7 +88,11 @@ The loopback-only inspector starts with normal tunnel operation. Open it with:
 cfdev inspect
 ```
 
+When `cfdev up` is attached in the foreground, future completed requests also appear as compact terminal lines. Use this feed for at-a-glance traffic only; it intentionally omits query parameters, headers, and bodies. Use the dashboard for filtering, full details, curl generation, and replay.
+
 Metadata is always captured. To inspect exact payloads for future requests, use `cfdev inspect --capture-bodies` or enable the dashboard toggle. Do not imply that prior requests gain bodies retroactively. Body capture is memory-only and bounded; it may contain sensitive application data even though authorization and cookie headers are redacted.
+
+The dashboard hides common framework-development noise by default, including Next.js HMR/static requests and common Vite/webpack endpoints. This is only a view filter: turn off **Hide framework noise** when diagnosing those paths, and do not claim the hidden requests were discarded from history.
 
 Use “Replay to localhost” only when the user intends to repeat a captured side effect. Replay targets the exact original configured localhost service, never the external provider, and appears as a marked new history entry. Truncated, uncaptured-body, streaming, and WebSocket requests cannot be replayed. Copy-as-curl likewise targets localhost and omits redacted credentials.
 

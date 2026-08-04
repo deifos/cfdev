@@ -1311,6 +1311,30 @@ func (app *App) up(ctx context.Context, inv cli.Invocation, view *ui.UI) (result
 		}
 		return result{Data: map[string]any{"tunnel": status, "inspector": inspectorStatus, "inspection_fallback": inspectorErr != nil, "already_running": alreadyRunning, "transitioned_from_foreground": transitioned, "domain": cfg.Domain}, Summary: summary}, nil
 	}
+	var requestStream *inspector.RequestStream
+	var requestFeedDone chan struct{}
+	if routing.Enabled && !inv.Options.Quiet && !manager.Status().Running {
+		requestStream, err = inspector.SubscribeRequests(ctx)
+		if err != nil {
+			view.Warning("The browser inspector is available, but the foreground request feed could not attach. " + err.Error())
+		} else {
+			requestFeedDone = make(chan struct{})
+			go func() {
+				defer close(requestFeedDone)
+				for {
+					event, nextErr := requestStream.Next()
+					if nextErr != nil {
+						return
+					}
+					view.Request(event.CompletedAt, event.Method, event.Path, event.Status, time.Duration(event.DurationMS*float64(time.Millisecond)), event.Target, event.ReplayOf != 0)
+				}
+			}()
+			defer func() {
+				_ = requestStream.Close()
+				<-requestFeedDone
+			}()
+		}
+	}
 	progress := view.Progress("Starting the tunnel…")
 	defer progress.Stop()
 	verbose := inv.Options.Verbose && !inv.Options.Quiet && !inv.Options.JSON

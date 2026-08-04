@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-03
+
+### Added
+
+- Stream a compact, color-coded request feed during foreground `cfdev up`, showing completion time, method, path, status, duration, localhost target, and replay markers while keeping the browser inspector for full details.
+- Add a default-on dashboard toggle that hides common Next.js, Vite, and webpack development noise without deleting those requests from in-memory history.
+
+### Changed
+
+- Use one status-color language across the terminal and dashboard: 2xx green, 3xx muted, and 4xx/5xx red.
+- Keep tunnel and local-app warnings visible alongside existing history, make response status and duration explicit in request details, and give replayed requests prominent list and detail markers.
+
+### Security
+
+- Omit query parameters, headers, and bodies from the foreground request feed and sanitize terminal control characters before displaying request metadata.
+
 ## [0.3.0] - 2026-08-03
 
 ### Added
@@ -73,7 +89,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Limit automatic DNS replacement and deletion to records that match cfdev's documented ownership rules.
 - Verify managed `cloudflared` downloads and cfdev release upgrades against published SHA-256 manifests.
 
-[Unreleased]: https://github.com/deifos/cfdev/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/deifos/cfdev/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/deifos/cfdev/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/deifos/cfdev/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/deifos/cfdev/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/deifos/cfdev/compare/v0.1.0...v0.1.1
