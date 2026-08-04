@@ -1,5 +1,7 @@
 # cfdev
 
+![How cfdev exposes localhost:3000 at a permanent public URL and inspects requests](docs/images/cfdev-readme-hero.png)
+
 **cfdev gives local projects permanent URLs on your Cloudflare domain—with one browser sign-in and one command per project.**
 
 The simplicity of ngrok, without changing URLs, copied tokens, or tunnel configuration.
