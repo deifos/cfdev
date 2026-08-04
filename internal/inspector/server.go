@@ -29,12 +29,14 @@ import (
 var indexHTML []byte
 
 type Server struct {
-	paths    config.Paths
-	token    string
-	version  string
-	store    *Store
-	shutdown chan struct{}
-	once     sync.Once
+	paths       config.Paths
+	token       string
+	version     string
+	store       *Store
+	shutdown    chan struct{}
+	once        sync.Once
+	eventsMu    sync.Mutex
+	subscribers map[chan RequestEvent]struct{}
 }
 
 func Run(paths config.Paths, token, version string) error {
@@ -72,7 +74,10 @@ func Run(paths config.Paths, token, version string) error {
 }
 
 func NewServer(paths config.Paths, token, version string) *Server {
-	return &Server{paths: paths, token: token, version: version, store: NewStore(), shutdown: make(chan struct{})}
+	return &Server{
+		paths: paths, token: token, version: version, store: NewStore(), shutdown: make(chan struct{}),
+		subscribers: make(map[chan RequestEvent]struct{}),
+	}
 }
 
 func (server *Server) uiHandler() http.Handler {
@@ -81,6 +86,7 @@ func (server *Server) uiHandler() http.Handler {
 	mux.HandleFunc("GET /api/health", server.apiHealth)
 	mux.HandleFunc("GET /api/state", server.apiState)
 	mux.HandleFunc("GET /api/requests", server.apiRequests)
+	mux.HandleFunc("GET "+requestEventsPath, server.apiEvents)
 	mux.HandleFunc("GET /api/requests/{id}", server.apiRequest)
 	mux.HandleFunc("POST /api/requests/{id}/replay", server.apiReplay)
 	mux.HandleFunc("POST /api/settings", server.apiSettings)
@@ -158,6 +164,68 @@ func (server *Server) apiRequests(writer http.ResponseWriter, _ *http.Request) {
 		views = append(views, makeExchangeView(item, false))
 	}
 	writeJSON(writer, http.StatusOK, views)
+}
+
+func (server *Server) apiEvents(writer http.ResponseWriter, request *http.Request) {
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		http.Error(writer, "streaming unavailable", http.StatusInternalServerError)
+		return
+	}
+	events, unsubscribe := server.subscribeEvents()
+	defer unsubscribe()
+	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	writer.Header().Set("Connection", "keep-alive")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(writer, ": cfdev request stream\n\n")
+	flusher.Flush()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case event := <-events:
+			encoded, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(writer, "data: %s\n\n", encoded)
+			flusher.Flush()
+		case <-heartbeat.C:
+			_, _ = io.WriteString(writer, ": keepalive\n\n")
+			flusher.Flush()
+		case <-request.Context().Done():
+			return
+		}
+	}
+}
+
+func (server *Server) subscribeEvents() (<-chan RequestEvent, func()) {
+	events := make(chan RequestEvent, MaxRequests)
+	server.eventsMu.Lock()
+	server.subscribers[events] = struct{}{}
+	server.eventsMu.Unlock()
+	return events, func() {
+		server.eventsMu.Lock()
+		delete(server.subscribers, events)
+		server.eventsMu.Unlock()
+	}
+}
+
+func (server *Server) record(exchange Exchange) Exchange {
+	added := server.store.Add(exchange)
+	event := RequestEvent{
+		ID: added.ID, CompletedAt: added.CompletedAt, Method: added.Method, Path: requestEventPath(added.Path), Hostname: added.Hostname,
+		Target: added.Target, Status: added.Status, DurationMS: added.DurationMS, ReplayOf: added.ReplayOf, LocalDown: added.LocalDown,
+	}
+	server.eventsMu.Lock()
+	for subscriber := range server.subscribers {
+		select {
+		case subscriber <- event:
+		default:
+		}
+	}
+	server.eventsMu.Unlock()
+	return added
 }
 
 func (server *Server) apiRequest(writer http.ResponseWriter, request *http.Request) {
@@ -309,7 +377,7 @@ func (server *Server) finish(exchange Exchange, requestCapture, responseCapture 
 	if responseCapture != nil {
 		exchange.ResponseBody = responseCapture.result()
 	}
-	server.store.Add(exchange)
+	server.record(exchange)
 }
 
 func (server *Server) targetFor(hostname string) (string, bool) {
@@ -390,7 +458,7 @@ func (server *Server) apiReplay(writer http.ResponseWriter, request *http.Reques
 		replayed.ResponseBody = captured.result()
 	}
 	replayed.DurationMS = float64(time.Since(started).Microseconds()) / 1000
-	added := server.store.Add(replayed)
+	added := server.record(replayed)
 	writeJSON(writer, http.StatusOK, map[string]any{"replayed": true, "request": makeExchangeView(added, false)})
 }
 

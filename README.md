@@ -23,7 +23,7 @@ The public URL stays the same every time. Put it in webhook providers, OAuth cal
 - **Native and cross-platform.** One small Go binary for Windows, macOS, and Linux, with no language runtime or package dependencies.
 - **Agent-ready.** Every major command has stable JSON, meaningful exit codes, no surprise prompts, and retry-safe behavior.
 - **Official transport.** cfdev manages Cloudflare's `cloudflared` binary rather than reimplementing the tunnel protocol.
-- **Built-in request inspector.** A loopback-only dashboard shows request metadata and local targets, with opt-in exact body capture, copy-as-curl, and one-shot replay to localhost.
+- **Built-in request inspector.** Foreground tunnels stream compact request lines, while a loopback-only dashboard provides metadata, local targets, opt-in exact body capture, copy-as-curl, and one-shot replay to localhost.
 
 ## Install
 
@@ -109,7 +109,7 @@ cfdev remove <name>             Remove a URL by its short project name
 cfdev remove --all              Remove all project URLs after confirmation
 cfdev clear                     Alias for remove --all
 cfdev list                      List mappings and local health
-cfdev up                        Run the tunnel in the foreground
+cfdev up                        Run the tunnel with a live request feed
 cfdev up -d                     Run the tunnel in the background
 cfdev down                      Stop the managed tunnel process
 cfdev status                    Show tunnel and local app health
@@ -136,7 +136,7 @@ Common flags:
 --version, -V                   Show the version
 ```
 
-Foreground tunnels show only cfdev's concise status messages by default. Detailed `cloudflared` output is always written to `~/.cfdev/cloudflared.log` and can also be streamed to the terminal with `--verbose` or `-v`.
+Foreground tunnels show cfdev's concise status followed by one compact line for every completed request. Detailed `cloudflared` output is always written to `~/.cfdev/cloudflared.log` and can also be streamed alongside the request feed with `--verbose` or `-v`.
 
 Slow network and tunnel operations show a compact spinner in interactive terminals. Fast operations finish before the spinner appears, redirected output receives one plain progress line, and `--json` / `--quiet` remain completely animation-free. Set `CFDEV_NO_SPINNER=1` to disable terminal animation or `NO_COLOR=1` to disable color.
 
@@ -152,6 +152,17 @@ cfdev inspect
 
 Request metadata is always captured: method, path, hostname, local target, response status, duration, and headers. The dashboard keeps one live list and detail pane, supports filtering, and clearly distinguishes no traffic, a stopped tunnel, and a local app that is not listening. Mapping changes and `cloudflared` restarts do not clear history because the local gateway remains alive.
 
+The default-on **Hide framework noise** toggle removes common Next.js, Vite, and webpack development traffic such as `/_next/webpack-hmr` and `/_next/static/` from the visible list without deleting it from in-memory history. Turn it off whenever that traffic is what you are debugging. Service warnings remain visible even when history exists, response status and duration sit beside the route in the detail pane, and response headers and bodies mirror the request sections. Status colors are consistent in the terminal and dashboard: 2xx green, 3xx muted, and 4xx/5xx red.
+
+Normal foreground operation also streams an at-a-glance request feed in the same terminal:
+
+```text
+19:55:07  GET      /health         200  2ms   → localhost:3000
+19:55:12  POST     /api/webhooks   204  18ms  → localhost:3000
+```
+
+The terminal feed shows local completion time, method, path, response status, duration, and target. It deliberately omits query parameters, headers, and bodies; use the browser inspector for those details, filtering, curl generation, and replay. Replays receive a visible marker. `cfdev up -d` has no attached terminal feed, and `--quiet` suppresses it.
+
 Exact request and response bodies are opt-in. Enable them for future traffic from the dashboard or when opening it:
 
 ```bash
@@ -160,9 +171,9 @@ cfdev inspect --capture-bodies
 
 The switch is prospective—requests already in history never gain bodies retroactively. Captured bytes are preserved exactly for webhook signature debugging and formatted only for display. Each body is capped at 1 MiB, the inspector keeps at most 200 requests and 32 MiB of body data, and it evicts the oldest entries first. Truncated bodies remain inspectable but cannot be replayed.
 
-“Replay to localhost” makes one request to the exact local target captured with the original exchange and adds a marked replay entry to the list. It never contacts the original webhook provider. Copy-as-curl also rewrites the URL and Host to the local target. `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are redacted and omitted from replay/curl; webhook signature headers remain available. WebSocket upgrades and streaming responses pass through transparently, with metadata only and replay disabled.
+“Replay to localhost” makes one request to the exact local target captured with the original exchange and adds a prominent **Replay** marker to the new list entry and a **Replay of #…** marker in its details. It never contacts the original webhook provider. Copy-as-curl also rewrites the URL and Host to the local target. `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` values are redacted and omitted from replay/curl; webhook signature headers remain available. WebSocket upgrades and streaming responses pass through transparently, with metadata only and replay disabled.
 
-If port `127.0.0.1:4040` or the gateway port is occupied, `cfdev inspect` reports the exact conflict. Normal `cfdev up` falls back to direct `cloudflared → localhost` routing with a warning so the tunnel remains usable without inspection.
+If port `127.0.0.1:4040` or the gateway port is occupied, `cfdev inspect` reports the exact conflict. Normal `cfdev up` falls back to direct `cloudflared → localhost` routing with a warning so the tunnel remains usable without inspection; the browser inspector and foreground request feed are unavailable in that fallback mode.
 
 ## Removing URLs
 

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,51 @@ func TestProgressUsesOneStaticLineOutsideTerminal(t *testing.T) {
 
 	if got, want := output.String(), "→  Removing demo.example.com…\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestRequestFeedIsCompactAndOmitsQueryParameters(t *testing.T) {
+	var output bytes.Buffer
+	view := New(&output, &output, cli.Options{})
+	completedAt := time.Date(2026, time.August, 3, 19, 55, 7, 0, time.Local)
+	view.Request(completedAt, "GET", "/hooks/stripe?token=do-not-print", http.StatusNoContent, 18*time.Millisecond, "http://127.0.0.1:3000", false)
+
+	if got, want := output.String(), "19:55:07  GET      /hooks/stripe  204  18ms  → localhost:3000\n"; got != want {
+		t.Fatalf("request output = %q, want %q", got, want)
+	}
+}
+
+func TestRequestFeedSanitizesTerminalControlCharacters(t *testing.T) {
+	var output bytes.Buffer
+	view := New(&output, &output, cli.Options{})
+	view.Request(time.Date(2026, time.August, 3, 19, 55, 7, 0, time.Local), "POST\x1b[31m", "/hook\nforged", http.StatusBadGateway, 500*time.Microsecond, "http://127.0.0.1:3000", true)
+
+	got := output.String()
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "\nforged") || !strings.Contains(got, "POST�[31m") || !strings.Contains(got, "/hook�forged") || !strings.Contains(got, "<1ms") || !strings.Contains(got, "replay") {
+		t.Fatalf("request output was not safely formatted: %q", got)
+	}
+}
+
+func TestRequestFeedRespectsQuietMode(t *testing.T) {
+	var output bytes.Buffer
+	view := New(&output, &output, cli.Options{Quiet: true})
+	view.Request(time.Now(), "GET", "/", http.StatusOK, time.Millisecond, "http://127.0.0.1:3000", false)
+	if output.Len() != 0 {
+		t.Fatalf("quiet request feed output = %q", output.String())
+	}
+}
+
+func TestRequestFeedUsesConsistentStatusColors(t *testing.T) {
+	var output bytes.Buffer
+	view := &UI{Out: &output, Err: &output, Color: true}
+	completedAt := time.Date(2026, time.August, 3, 19, 55, 7, 0, time.Local)
+	view.Request(completedAt, "GET", "/ok", http.StatusOK, time.Millisecond, "http://127.0.0.1:3000", false)
+	view.Request(completedAt, "GET", "/moved", http.StatusFound, time.Millisecond, "http://127.0.0.1:3000", false)
+	view.Request(completedAt, "GET", "/missing", http.StatusNotFound, time.Millisecond, "http://127.0.0.1:3000", false)
+
+	got := output.String()
+	if !strings.Contains(got, green+"200"+reset) || !strings.Contains(got, dim+"302"+reset) || !strings.Contains(got, red+"404"+reset) {
+		t.Fatalf("status colors do not match the UI language: %q", got)
 	}
 }
 

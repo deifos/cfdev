@@ -2,7 +2,7 @@ package app
 
 import "fmt"
 
-var Version = "0.3.0-dev"
+var Version = "0.3.1-dev"
 
 func helpText(command string) string {
 	commandHelp := map[string]string{
@@ -15,7 +15,7 @@ func helpText(command string) string {
 		"remove":  "cfdev remove <name> [--force]\ncfdev remove --all [--yes]\n\n  Remove one permanent project URL by its short name:\n\n    cfdev remove screenslick\n\n  A full configured hostname, such as `screenslick.example.com`, is also accepted. Bulk removal always requires confirmation.",
 		"clear":   "cfdev clear [--yes]\n\n  Remove every cfdev project hostname after confirmation and stop the empty tunnel.",
 		"list":    "cfdev list\n\n  Show permanent URLs, local targets, and whether each app is listening.",
-		"up":      "cfdev up [--detach] [--verbose]\n\n  Start the tunnel in the foreground, or use -d for the background. Detailed cloudflared output is hidden unless --verbose is used.",
+		"up":      "cfdev up [--detach] [--verbose]\n\n  Start the tunnel in the foreground with a compact live request feed, or use -d for the background. Detailed cloudflared output is hidden unless --verbose is used.",
 		"down":    "cfdev down\n\n  Stop the cloudflared process managed by cfdev.",
 		"status":  "cfdev status\n\n  Show tunnel process state and local application health.",
 		"open":    "cfdev open <name>\n\n  Open a configured permanent URL by its short project name, such as `cfdev open screenslick`.",
@@ -38,7 +38,7 @@ Usage
   cfdev remove <name>             Remove a URL by short name
   cfdev clear                     Remove all project URLs safely
   cfdev list                      List mappings and local health
-  cfdev up [-d]                   Start the tunnel
+  cfdev up [-d]                   Start the tunnel and foreground request feed
   cfdev down                      Stop the tunnel
   cfdev status                    Show tunnel and app health
   cfdev open <name>               Open a public URL

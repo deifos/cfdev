@@ -91,6 +91,67 @@ func (ui *UI) Warning(message string) { ui.Line(ui.Paint(yellow, "!") + "  " + m
 func (ui *UI) Heading(message string) { ui.Line(ui.Paint(bold, message)) }
 func (ui *UI) Muted(message string)   { ui.Line(ui.Paint(dim, message)) }
 
+// Request prints one compact, terminal-safe line for a completed proxied
+// request. Query parameters, headers, and bodies remain in the inspector UI.
+func (ui *UI) Request(completedAt time.Time, method, path string, status int, duration time.Duration, target string, replay bool) {
+	method = terminalText(method, 12)
+	path = terminalRequestPath(path, 72)
+	target = terminalText(strings.TrimPrefix(strings.TrimPrefix(target, "http://"), "https://"), 48)
+	target = strings.Replace(target, "127.0.0.1", "localhost", 1)
+	statusText := fmt.Sprint(status)
+	switch {
+	case status >= 400:
+		statusText = ui.Paint(red, statusText)
+	case status >= 300:
+		statusText = ui.Paint(dim, statusText)
+	case status >= 200:
+		statusText = ui.Paint(green, statusText)
+	default:
+		statusText = ui.Paint(dim, statusText)
+	}
+	suffix := ""
+	if replay {
+		suffix = ui.Paint(dim, "  replay")
+	}
+	ui.Line(fmt.Sprintf("%s  %s  %s  %s  %s  → %s%s",
+		ui.Paint(dim, completedAt.Local().Format("15:04:05")),
+		ui.Paint(cyan, fmt.Sprintf("%-7s", method)), path, statusText, requestDuration(duration), target, suffix))
+}
+
+func terminalRequestPath(value string, limit int) string {
+	if index := strings.IndexByte(value, '?'); index >= 0 {
+		value = value[:index]
+	}
+	if value == "" {
+		value = "/"
+	}
+	return terminalText(value, limit)
+}
+
+func terminalText(value string, limit int) string {
+	value = strings.Map(func(character rune) rune {
+		if character < 0x20 || character == 0x7f || (character >= 0x80 && character <= 0x9f) {
+			return '�'
+		}
+		return character
+	}, value)
+	runes := []rune(value)
+	if limit > 3 && len(runes) > limit {
+		return string(runes[:limit-3]) + "..."
+	}
+	return value
+}
+
+func requestDuration(duration time.Duration) string {
+	if duration < time.Millisecond {
+		return "<1ms"
+	}
+	if duration < time.Second {
+		return fmt.Sprintf("%dms", duration.Round(time.Millisecond)/time.Millisecond)
+	}
+	return fmt.Sprintf("%.1fs", duration.Seconds())
+}
+
 func (ui *UI) Line(message string) {
 	if !ui.Options.Quiet {
 		ui.mu.Lock()

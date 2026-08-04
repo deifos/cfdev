@@ -1,7 +1,7 @@
 # cfdev implementation draft
 
-**Status:** v0.3 request inspector implemented on a release branch
-**Target:** v0.3.0
+**Status:** v0.3.1 released with the foreground request feed
+**Target:** v0.3.1
 **cfdev gives local projects permanent URLs on your Cloudflare domain—with one browser sign-in and one command per project.**
 
 The simplicity of ngrok, without changing URLs, copied tokens, or tunnel configuration.
@@ -48,6 +48,9 @@ $ cfdev 3000
 
 ✓ Added https://qtable.example.com → localhost:3000
 ● Tunnel running — press Ctrl+C to stop
+
+19:55:07  GET      /health         200  2ms   → localhost:3000
+19:55:12  POST     /api/webhooks   204  18ms  → localhost:3000
 ```
 
 That URL stays the same across restarts. It can be saved in webhook providers, OAuth callbacks, mobile apps, and other integrations.
@@ -158,7 +161,7 @@ Security boundaries:
 | `cfdev remove <name>` | Remove the URL by its short project name and delete its cfdev-owned DNS record |
 | `cfdev remove --all` / `cfdev clear` | Confirm, remove every cfdev-owned project hostname, clear mappings, and stop the tunnel |
 | `cfdev list` / `cfdev ls` | Show URLs, ports, tunnel state, and whether each local app is listening |
-| `cfdev up` | Run the tunnel in the foreground |
+| `cfdev up` | Run the tunnel in the foreground with a compact live request feed |
 | `cfdev up -d` | Run the tunnel in the background |
 | `cfdev down` | Gracefully stop the cfdev-managed process |
 | `cfdev status` | Show tunnel process state and local app health |
@@ -261,6 +264,8 @@ The folder shortcut sets the active machine naturally: running `cfdev 3000` insi
 ## 8. Process behavior
 
 - `cfdev up` stays attached to the terminal, shows concise cfdev status, and responds cleanly to Ctrl+C.
+- Each completed request prints one terminal-safe metadata line with local time, method, path without query parameters, status, duration, localhost target, and an optional replay marker. Headers and bodies remain in the browser inspector.
+- Terminal and dashboard statuses use the same language: 2xx green, 3xx muted, and 4xx/5xx red.
 - Raw `cloudflared` output is hidden by default, always retained in `cloudflared.log`, and streamed only with `--verbose` / `-v`.
 - `cfdev up -d` starts a hidden/background process and records its PID and start time.
 - If a foreground tunnel is already running, `cfdev up -d` stops that exact managed connector and replaces it with a background connector without requiring a manual terminal restart.
@@ -269,6 +274,8 @@ The folder shortcut sets the active machine naturally: running `cfdev 3000` insi
 - Tunnel logs are kept small through basic rotation.
 - Normal ingress points to a persistent loopback gateway at `127.0.0.1:4041`; the gateway reloads mappings from config, so its in-memory history survives connector reloads.
 - The dashboard/API binds to `127.0.0.1:4040`. If either inspector port cannot bind, tunnel startup writes direct localhost ingress and continues with a warning.
+- The dashboard keeps tunnel/local-app failures visible even when history exists, presents response status, duration, headers, and body beside their request counterparts, and marks replays prominently.
+- A default-on view filter hides common Next.js, Vite, and webpack development traffic without removing it from the bounded in-memory history.
 
 ## 9. Distribution and upgrades
 
